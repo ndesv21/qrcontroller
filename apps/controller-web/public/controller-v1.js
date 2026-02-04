@@ -21,6 +21,7 @@
     start: "/sounds/startrecording.m4a",
     stop: "/sounds/stoprecording.m4a",
   };
+  const DISCOVERY_PROMPT = "Scan QR code with camera or add room code:";
 
   const state = {
     hubBase: "",
@@ -44,6 +45,7 @@
     activePointerId: null,
     holdRequested: false,
     connected: false,
+    uiMode: "",
     cueSounds: {
       start: null,
       stop: null,
@@ -82,15 +84,16 @@
 
     setMicState("idle");
     setTranscript("...");
+    setUiMode("discovery");
+    showJoinTools();
     updateSessionMeta();
 
     if (state.sessionId && state.joinToken && state.hubBase) {
-      hideJoinTools();
       joinSession();
       return;
     }
 
-    enterDiscoveryMode("Not connected. Scan QR or enter room code.", false, true);
+    enterDiscoveryMode(DISCOVERY_PROMPT, false, true);
   }
 
   function bindUiEvents() {
@@ -247,7 +250,6 @@
 
       updateSessionMeta();
       applySessionMeta(data.session || {});
-      hideJoinTools();
       stopScanFlow();
       updateUrlWithSession();
       openSocket(data.wsUrl || `${state.hubBase}/ws`);
@@ -282,7 +284,7 @@
       if (!response.ok || !data.ok) {
         const errCode = String(data.error || "join_failed");
         if (errCode === "session_closed" || errCode === "session_not_found") {
-          enterDiscoveryMode("Session ended. Scan again or enter room code.", true, true);
+          enterDiscoveryMode("Session ended. Scan QR code with camera or add room code.", true, true);
           return;
         }
         throw new Error(errCode);
@@ -294,7 +296,6 @@
       applySessionMeta(data.session || {});
       updateSessionMeta();
 
-      hideJoinTools();
       setStatus("Connected. Opening live channel...");
       openSocket(data.wsUrl || `${state.hubBase}/ws`);
     } catch (err) {
@@ -349,6 +350,8 @@
         state.connected = true;
         state.reconnectAttempts = 0;
         clearReconnectTimer();
+        setUiMode("connected");
+        hideJoinTools();
         if (state.speechApiBase) {
           setStatus("Ready. Hold the button to speak.");
         }
@@ -360,13 +363,15 @@
 
       ws.addEventListener("close", (event) => {
         state.connected = false;
+        setUiMode("discovery");
+        showJoinTools();
         const reason = String(event.reason || "").toLowerCase();
         if (
           reason.includes("host_disconnected") ||
           reason.includes("session_closed") ||
           reason.includes("closed_by_host")
         ) {
-          enterDiscoveryMode("TV disconnected. Scan again or enter room code.", true, true);
+          enterDiscoveryMode("TV disconnected. Scan QR code with camera or add room code.", true, true);
           return;
         }
 
@@ -376,6 +381,8 @@
 
       ws.addEventListener("error", () => {
         state.connected = false;
+        setUiMode("discovery");
+        showJoinTools();
         setStatus("Connection error. Reconnecting...");
         scheduleReconnect();
       });
@@ -401,7 +408,7 @@
     }
 
     if (message.type === "presence" && message.actor && message.actor.role === "host" && message.actor.state === "left") {
-      enterDiscoveryMode("TV disconnected. Scan again or enter room code.", true, true);
+      enterDiscoveryMode("TV disconnected. Scan QR code with camera or add room code.", true, true);
       return;
     }
 
@@ -889,7 +896,6 @@
 
       updateSessionMeta();
       updateUrlWithSession();
-      hideJoinTools();
       joinSession();
     } catch {
       setStatus("Unsupported QR format. Use the room code fallback.", true);
@@ -899,6 +905,7 @@
   function enterDiscoveryMode(message, isError, clearSession) {
     state.connected = false;
     clearReconnectTimer();
+    setUiMode("discovery");
 
     if (state.ws) {
       try {
@@ -914,7 +921,7 @@
     state.sttBusy = false;
     setMicState("idle");
     setTranscript("...");
-    setStatus(message || "Not connected.", !!isError);
+    setStatus(message || DISCOVERY_PROMPT, !!isError);
 
     if (clearSession) {
       state.sessionId = "";
@@ -929,6 +936,15 @@
     }
 
     showJoinTools();
+  }
+
+  function setUiMode(mode) {
+    const nextMode = mode === "connected" ? "connected" : "discovery";
+    if (state.uiMode === nextMode) return;
+
+    state.uiMode = nextMode;
+    document.body.classList.toggle("mode-connected", nextMode === "connected");
+    document.body.classList.toggle("mode-discovery", nextMode === "discovery");
   }
 
   function showJoinTools() {

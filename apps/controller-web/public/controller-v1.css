@@ -92,6 +92,17 @@ code {
   gap: clamp(14px, 2.5vh, 24px);
 }
 
+body.mode-discovery .mic-button,
+body.mode-discovery .transcript,
+body.mode-discovery .session-meta {
+  display: none;
+}
+
+body.mode-connected .join-tools,
+body.mode-connected .scan-panel {
+  display: none !important;
+}
+
 .status {
   margin: 0;
   min-height: 1.4em;
@@ -231,19 +242,49 @@ code {
 }
 
 .join-tools {
-  width: min(96vw, 520px);
+  width: min(94vw, 460px);
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid #2c4a66;
-  background: #0f2136cc;
+  gap: 12px;
+  justify-items: center;
+  padding: 0;
+}
+
+.qr-illustration {
+  width: 78px;
+  height: 78px;
+  border-radius: 16px;
+  border: 2px dashed #6f8dad;
+  background:
+    linear-gradient(180deg, #16304a, #0d2033),
+    repeating-linear-gradient(
+      90deg,
+      #dbe9f8 0,
+      #dbe9f8 7px,
+      transparent 7px,
+      transparent 11px
+    );
+  color: #f4f8ff;
+  display: grid;
+  place-items: center;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.join-title {
+  margin: 0;
+  color: #eff7ff;
+  text-align: center;
+  font-size: clamp(1.02rem, 4vw, 1.34rem);
+  line-height: 1.28;
+  max-width: 24ch;
 }
 
 .code-row {
   display: grid;
   gap: 8px;
-  grid-template-columns: 1fr auto;
+  width: 100%;
+  grid-template-columns: 1fr 120px;
 }
 
 #room-code-input {
@@ -267,6 +308,7 @@ code {
   font-size: 0.98rem;
   font-weight: 700;
   background: linear-gradient(180deg, #2a4c6d, #1c3248);
+  width: 100%;
 }
 
 .join-btn.secondary {
@@ -278,6 +320,7 @@ code {
   color: #b8cee6;
   font-size: 0.92rem;
   text-align: center;
+  min-height: 1.2em;
 }
 
 .scan-panel {
