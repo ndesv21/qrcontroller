@@ -77,3 +77,17 @@ curl -s http://localhost:8080/api/v1/sessions   -H 'content-type: application/js
 - Keep `/api/v1/*` stable; introduce `/api/v2/*` for breaking changes.
 
 Read `AGENTS.md` and `docs/PURPOSE_AND_PRECAUTIONS.md` before major changes.
+
+
+## Quick Deploy (Very Simple)
+
+1) Push this repo to GitHub.
+2) In Railway, create a project from that GitHub repo.
+3) Add hub env vars from `apps/hub/.env.example`.
+4) In Vercel, deploy `apps/controller-web`.
+5) Set domains:
+   - Hub: `https://<railway-domain>`
+   - Controller: `https://<vercel-domain>`
+6) Update hub env vars so they point to those real domains.
+
+Then update Roku `GetControllerHubBase()` to the Railway hub domain.
