@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qrcontroller.local/protocol/universal-controller-event-v1.schema.json",
+  "title": "Universal Controller Event v1",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "id",
+    "sessionId",
+    "action",
+    "payload"
+  ],
+  "properties": {
+    "v": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["action", "state", "event"]
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "sessionId": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "action": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "fromRole": {
+      "type": "string",
+      "enum": ["host", "controller"]
+    },
+    "toRole": {
+      "type": "string",
+      "enum": ["host", "controller"]
+    },
+    "sentAt": {
+      "type": "string"
+    },
+    "receivedAt": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": true
+}

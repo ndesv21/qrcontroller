@@ -1,0 +1,13 @@
+{
+  "name": "qrcontroller",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Universal QR phone controller for Roku/Web/Samsung/LG style game clients",
+  "workspaces": [
+    "apps/hub"
+  ],
+  "scripts": {
+    "dev:hub": "npm --workspace apps/hub run dev",
+    "start:hub": "npm --workspace apps/hub run start"
+  }
+}
