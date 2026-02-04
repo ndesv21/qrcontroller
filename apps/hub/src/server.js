@@ -16,6 +16,11 @@ const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS || String(2 * 60 * 60
 const EVENT_HISTORY_LIMIT = parseInt(process.env.EVENT_HISTORY_LIMIT || "300", 10);
 const MAX_POLL_LIMIT = 200;
 const SESSION_STORE_FILE = process.env.SESSION_STORE_FILE || "";
+const ROOM_CODE_SIZE = 4;
+const HOST_STALE_MS = parseInt(process.env.HOST_STALE_MS || "12000", 10);
+const MAX_CONTROLLERS_PER_SESSION = clampInt(process.env.MAX_CONTROLLERS_PER_SESSION || "1", 1, 10);
+const CODE_JOIN_WINDOW_MS = parseInt(process.env.CODE_JOIN_WINDOW_MS || "60000", 10);
+const CODE_JOIN_MAX_ATTEMPTS = parseInt(process.env.CODE_JOIN_MAX_ATTEMPTS || "30", 10);
 
 const CONTROLLER_BASE_URL = stripTrailingSlash(process.env.CONTROLLER_BASE_URL || "http://localhost:3000");
 const HUB_PUBLIC_BASE_URL = stripTrailingSlash(process.env.HUB_PUBLIC_BASE_URL || `http://localhost:${PORT}`);
@@ -26,6 +31,8 @@ const CONTROLLER_INDEX_HTML = path.join(CONTROLLER_PUBLIC_DIR, "index.html");
 
 const app = express();
 const sessions = new Map();
+const sessionCodes = new Map();
+const codeJoinAttempts = new Map();
 const persistState = { timer: null };
 
 const corsOptions = CORS_ORIGINS.has("*")
@@ -82,6 +89,7 @@ app.get(`${API_PREFIX}/sessions/:sessionId`, (req, res) => {
     return;
   }
 
+  touchRoleHeartbeat(session, role);
   res.json({ ok: true, session: serializeSession(session, false) });
 });
 
@@ -103,11 +111,53 @@ app.post(`${API_PREFIX}/sessions/:sessionId/join`, (req, res) => {
     return;
   }
 
+  touchRoleHeartbeat(session, "controller");
+
   res.json({
     ok: true,
     protocolVersion: PROTOCOL_VERSION,
     controllerToken: session.joinToken,
     wsUrl: `${HUB_PUBLIC_BASE_URL}/ws`,
+    session: serializeSession(session, false),
+  });
+});
+
+app.post(`${API_PREFIX}/sessions/join-by-code`, (req, res) => {
+  const body = req.body || {};
+  const code = sanitizeRoomCode(body.code);
+
+  if (!code || code.length !== ROOM_CODE_SIZE) {
+    res.status(400).json({ ok: false, error: "invalid_code" });
+    return;
+  }
+
+  if (!allowCodeJoinAttempt(req.ip || "unknown")) {
+    res.status(429).json({ ok: false, error: "too_many_attempts" });
+    return;
+  }
+
+  const sessionId = sessionCodes.get(code);
+  if (!sessionId) {
+    res.status(404).json({ ok: false, error: "room_not_found" });
+    return;
+  }
+
+  const session = getSession(sessionId);
+  if (!session || !isSessionOpen(session)) {
+    sessionCodes.delete(code);
+    res.status(404).json({ ok: false, error: "room_not_found" });
+    return;
+  }
+
+  touchRoleHeartbeat(session, "controller");
+
+  res.json({
+    ok: true,
+    protocolVersion: PROTOCOL_VERSION,
+    controllerToken: session.joinToken,
+    joinToken: session.joinToken,
+    wsUrl: `${HUB_PUBLIC_BASE_URL}/ws`,
+    hubBase: HUB_PUBLIC_BASE_URL,
     session: serializeSession(session, false),
   });
 });
@@ -132,6 +182,8 @@ app.post(`${API_PREFIX}/sessions/:sessionId/events`, (req, res) => {
     res.status(401).json({ ok: false, error: "unauthorized" });
     return;
   }
+
+  touchRoleHeartbeat(session, role);
 
   const envelope = buildEnvelope(session, role, body.message || {}, "http");
   const saved = appendEvent(session, envelope);
@@ -165,6 +217,8 @@ app.get(`${API_PREFIX}/sessions/:sessionId/events/poll`, (req, res) => {
     res.status(401).json({ ok: false, error: "unauthorized" });
     return;
   }
+
+  touchRoleHeartbeat(session, role);
 
   const after = parseCursor(req.query.after);
   const limit = Math.min(clampInt(req.query.limit, 1, 50), MAX_POLL_LIMIT);
@@ -249,6 +303,11 @@ if (fs.existsSync(CONTROLLER_PUBLIC_DIR)) {
     res.sendFile(CONTROLLER_JOIN_HTML);
   });
 
+  app.get("/join", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(CONTROLLER_JOIN_HTML);
+  });
+
   app.get("/", (req, res) => {
     res.sendFile(CONTROLLER_INDEX_HTML);
   });
@@ -284,15 +343,24 @@ wss.on("connection", (ws, req) => {
     return;
   }
 
+  if (role === "controller") {
+    while (countByRole(session, "controller") >= MAX_CONTROLLERS_PER_SESSION) {
+      const evicted = evictOldestControllerConnection(session);
+      if (!evicted) break;
+    }
+  }
+
   const connection = {
     id: sanitizeId(url.searchParams.get("clientId")) || makeId(16),
     role,
     ws,
     connectedAt: nowIso(),
+    connectedAtMs: Date.now(),
     userAgent: (req.headers["user-agent"] || "").toString().slice(0, 200),
   };
 
   session.connections.set(connection.id, connection);
+  touchRoleHeartbeat(session, role);
 
   sendJson(ws, {
     type: "hello",
@@ -316,6 +384,8 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
+    touchRoleHeartbeat(session, role);
+
     if (parsed && parsed.type === "ping") {
       sendJson(ws, { type: "pong", ts: nowIso() });
       return;
@@ -335,6 +405,7 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     session.connections.delete(connection.id);
+    touchRoleHeartbeat(session, role);
     broadcastPresence(session, connection, "left");
   });
 
@@ -355,15 +426,32 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
     const expired = Date.parse(session.expiresAt) <= now;
-    const closedTooLong = session.closedAt && Date.parse(session.closedAt) + 5 * 60 * 1000 <= now;
+    const hostStale =
+      !session.closedAt &&
+      session.hostLastSeenAt &&
+      Date.parse(session.hostLastSeenAt) + HOST_STALE_MS <= now;
 
-    if (expired || closedTooLong) {
-      closeSession(session, expired ? "expired" : "closed");
+    if (expired) {
+      closeSession(session, "expired");
+      sessions.delete(id);
+      schedulePersist();
+      continue;
+    }
+
+    if (hostStale) {
+      closeSession(session, "host_disconnected");
+    }
+
+    const closedTooLong = session.closedAt && Date.parse(session.closedAt) + 5 * 60 * 1000 <= now;
+    if (closedTooLong) {
+      closeSession(session, "closed");
       sessions.delete(id);
       schedulePersist();
     }
   }
-}, 30 * 1000).unref();
+
+  pruneCodeJoinAttempts(now);
+}, 5 * 1000).unref();
 
 let shutdownStarted = false;
 function handleShutdown(signal) {
@@ -386,9 +474,12 @@ function createSession(body) {
     : [];
 
   const metadata = isRecord(body.metadata) ? body.metadata : {};
+  const id = makeId(12);
+  const createdAt = nowIso();
 
   return {
-    id: makeId(12),
+    id,
+    roomCode: reserveRoomCode(id),
     platform: sanitizeSimple(body.platform) || "unknown",
     capabilities,
     metadata,
@@ -396,9 +487,12 @@ function createSession(body) {
     clientVersion: sanitizeClientVersion(body.clientVersion) || "1",
     hostToken: makeId(32),
     joinToken: makeId(24),
-    createdAt: nowIso(),
+    createdAt,
     expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
     closedAt: null,
+    closeReason: "",
+    hostLastSeenAt: createdAt,
+    controllerLastSeenAt: null,
     connections: new Map(),
     eventSeq: 0,
     events: [],
@@ -408,6 +502,7 @@ function createSession(body) {
 function serializeSession(session, includeSecrets) {
   const out = {
     id: session.id,
+    roomCode: session.roomCode,
     platform: session.platform,
     capabilities: session.capabilities,
     metadata: session.metadata,
@@ -416,6 +511,7 @@ function serializeSession(session, includeSecrets) {
     createdAt: session.createdAt,
     expiresAt: session.expiresAt,
     closedAt: session.closedAt,
+    closeReason: session.closeReason || "",
     links: {
       joinUrl: buildJoinUrl(session),
       wsUrl: `${HUB_PUBLIC_BASE_URL}/ws`,
@@ -439,7 +535,8 @@ function serializeSession(session, includeSecrets) {
 
 function buildJoinUrl(session) {
   const hub = encodeURIComponent(HUB_PUBLIC_BASE_URL);
-  return `${CONTROLLER_BASE_URL}/join/${encodeURIComponent(session.id)}?t=${encodeURIComponent(session.joinToken)}&hub=${hub}&cv=${encodeURIComponent(session.clientVersion)}`;
+  const rc = encodeURIComponent(session.roomCode || "");
+  return `${CONTROLLER_BASE_URL}/join/${encodeURIComponent(session.id)}?t=${encodeURIComponent(session.joinToken)}&hub=${hub}&cv=${encodeURIComponent(session.clientVersion)}&rc=${rc}`;
 }
 
 function buildEnvelope(session, fromRole, incoming, source) {
@@ -510,6 +607,8 @@ function broadcastPresence(session, actor, state) {
 function closeSession(session, reason) {
   if (!session.closedAt) {
     session.closedAt = nowIso();
+    session.closeReason = String(reason || "closed");
+    releaseRoomCode(session.roomCode, session.id);
   }
 
   for (const connection of session.connections.values()) {
@@ -595,8 +694,10 @@ function loadSessionsFromDisk() {
       const expiresAt = typeof item.expiresAt === "string" ? item.expiresAt : nowIso();
       if (Date.parse(expiresAt) <= now) continue;
 
+      const createdAt = typeof item.createdAt === "string" ? item.createdAt : nowIso();
       const session = {
         id,
+        roomCode: reserveRoomCode(id, item.roomCode),
         platform: sanitizeSimple(item.platform) || "unknown",
         capabilities: Array.isArray(item.capabilities)
           ? item.capabilities.filter((v) => typeof v === "string" && v.length > 0).slice(0, 50)
@@ -606,9 +707,13 @@ function loadSessionsFromDisk() {
         clientVersion: sanitizeClientVersion(item.clientVersion) || "1",
         hostToken: getToken(item.hostToken),
         joinToken: getToken(item.joinToken),
-        createdAt: typeof item.createdAt === "string" ? item.createdAt : nowIso(),
+        createdAt,
         expiresAt,
         closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+        closeReason: typeof item.closeReason === "string" ? item.closeReason : "",
+        hostLastSeenAt: typeof item.hostLastSeenAt === "string" ? item.hostLastSeenAt : createdAt,
+        controllerLastSeenAt:
+          typeof item.controllerLastSeenAt === "string" ? item.controllerLastSeenAt : null,
         connections: new Map(),
         eventSeq: Number.isFinite(item.eventSeq) ? Math.max(0, Math.floor(item.eventSeq)) : 0,
         events: [],
@@ -666,6 +771,7 @@ function flushPersist() {
   for (const session of sessions.values()) {
     serialized.push({
       id: session.id,
+      roomCode: session.roomCode,
       platform: session.platform,
       capabilities: session.capabilities,
       metadata: session.metadata,
@@ -675,6 +781,9 @@ function flushPersist() {
       createdAt: session.createdAt,
       expiresAt: session.expiresAt,
       closedAt: session.closedAt,
+      closeReason: session.closeReason,
+      hostLastSeenAt: session.hostLastSeenAt,
+      controllerLastSeenAt: session.controllerLastSeenAt,
       eventSeq: session.eventSeq,
       events: session.events,
     });
@@ -687,6 +796,104 @@ function flushPersist() {
     fs.renameSync(tmp, SESSION_STORE_FILE);
   } catch (err) {
     console.warn(`[hub] failed to persist sessions: ${String(err.message || err)}`);
+  }
+}
+
+function touchRoleHeartbeat(session, role) {
+  if (!session) return;
+  const ts = nowIso();
+  if (role === "host") {
+    session.hostLastSeenAt = ts;
+  } else if (role === "controller") {
+    session.controllerLastSeenAt = ts;
+  }
+}
+
+function evictOldestControllerConnection(session) {
+  let oldest = null;
+  for (const connection of session.connections.values()) {
+    if (connection.role !== "controller") continue;
+    if (!oldest || connection.connectedAtMs < oldest.connectedAtMs) {
+      oldest = connection;
+    }
+  }
+
+  if (!oldest) return false;
+
+  session.connections.delete(oldest.id);
+  closeSocket(oldest.ws, 1001, "replaced_by_new_controller");
+  broadcastPresence(session, oldest, "left");
+  return true;
+}
+
+function reserveRoomCode(sessionId, preferredCode) {
+  const preferred = sanitizeRoomCode(preferredCode);
+  if (preferred) {
+    const owner = sessionCodes.get(preferred);
+    if (!owner || owner === sessionId) {
+      sessionCodes.set(preferred, sessionId);
+      return preferred;
+    }
+  }
+
+  for (let i = 0; i < 1500; i += 1) {
+    const code = makeRoomCode();
+    if (!sessionCodes.has(code)) {
+      sessionCodes.set(code, sessionId);
+      return code;
+    }
+  }
+
+  throw new Error("room_code_space_exhausted");
+}
+
+function releaseRoomCode(code, sessionId) {
+  const normalized = sanitizeRoomCode(code);
+  if (!normalized) return;
+  const owner = sessionCodes.get(normalized);
+  if (!owner || owner === sessionId) {
+    sessionCodes.delete(normalized);
+  }
+}
+
+function makeRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  let out = "";
+  for (let i = 0; i < ROOM_CODE_SIZE; i += 1) {
+    const idx = crypto.randomInt(0, alphabet.length);
+    out += alphabet[idx];
+  }
+  return out;
+}
+
+function sanitizeRoomCode(value) {
+  if (typeof value !== "string") return "";
+  return value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, ROOM_CODE_SIZE);
+}
+
+function allowCodeJoinAttempt(ipRaw) {
+  const now = Date.now();
+  const ip = String(ipRaw || "unknown").slice(0, 120);
+  const entry = codeJoinAttempts.get(ip);
+
+  if (!entry || now - entry.windowStart >= CODE_JOIN_WINDOW_MS) {
+    codeJoinAttempts.set(ip, { windowStart: now, count: 1 });
+    return true;
+  }
+
+  if (entry.count >= CODE_JOIN_MAX_ATTEMPTS) {
+    return false;
+  }
+
+  entry.count += 1;
+  return true;
+}
+
+function pruneCodeJoinAttempts(now = Date.now()) {
+  for (const [ip, entry] of codeJoinAttempts.entries()) {
+    if (!entry || now - entry.windowStart >= CODE_JOIN_WINDOW_MS * 2) {
+      codeJoinAttempts.delete(ip);
+    }
   }
 }
 

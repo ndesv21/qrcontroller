@@ -10,9 +10,32 @@
   <body>
     <main class="mic-shell">
       <p id="status" class="status">Connecting...</p>
-      <button id="mic-button" class="mic-button" type="button" aria-label="Hold to speak"></button>
+
+      <button id="mic-button" class="mic-button" type="button" aria-label="Hold to speak">
+        <span id="mic-label" class="mic-label"></span>
+      </button>
+
       <p id="transcript" class="transcript">...</p>
-      <p class="session-meta"><span id="session-id">-</span></p>
+
+      <p class="session-meta">
+        <span id="session-id">Session: -</span>
+        <span class="session-sep">•</span>
+        <span id="room-code">Code: ----</span>
+      </p>
+
+      <section id="join-tools" class="join-tools" hidden>
+        <button id="scan-button" class="join-btn" type="button">Scan QR</button>
+        <div class="code-row">
+          <input id="room-code-input" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="4" placeholder="ABCD" aria-label="Room code" />
+          <button id="code-join-button" class="join-btn" type="button">Join</button>
+        </div>
+        <p id="join-help" class="join-help">Scan the TV QR or enter the 4-letter room code.</p>
+      </section>
+
+      <section id="scan-panel" class="scan-panel" hidden>
+        <video id="scan-video" class="scan-video" playsinline muted></video>
+        <button id="scan-stop-button" class="join-btn secondary" type="button">Stop Scan</button>
+      </section>
     </main>
 
     <script src="/controller-v1.js"></script>
