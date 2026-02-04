@@ -673,10 +673,13 @@
     if (state.sttWarmStarted || !state.speechApiBase) return;
     state.sttWarmStarted = true;
 
-    const silenceBytes = new Uint8Array(3200);
+    const silenceBytes = new Uint8Array(16000);
     const silenceBase64 = arrayBufferToBase64(silenceBytes.buffer);
 
-    requestTranscript(silenceBase64, 16000)
+    requestTranscript(silenceBase64, 16000, {
+      warmup: true,
+      warmupReason: "session_start",
+    })
       .then(() => {
         // warm-up only
       })
@@ -685,7 +688,8 @@
       });
   }
 
-  async function requestTranscript(audioContentBase64, sampleRateHertz) {
+  async function requestTranscript(audioContentBase64, sampleRateHertz, options) {
+    const opts = options || {};
     const headers = {
       "Content-Type": "application/json",
     };
@@ -703,6 +707,8 @@
         sampleRateHertz,
         languageCode: state.sttLanguageCode || "en-US",
         enablePunctuation: true,
+        warmup: opts.warmup === true,
+        warmupReason: typeof opts.warmupReason === "string" ? opts.warmupReason : "",
       }),
     });
 
