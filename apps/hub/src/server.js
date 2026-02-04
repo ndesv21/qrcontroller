@@ -20,6 +20,9 @@ const SESSION_STORE_FILE = process.env.SESSION_STORE_FILE || "";
 const CONTROLLER_BASE_URL = stripTrailingSlash(process.env.CONTROLLER_BASE_URL || "http://localhost:3000");
 const HUB_PUBLIC_BASE_URL = stripTrailingSlash(process.env.HUB_PUBLIC_BASE_URL || `http://localhost:${PORT}`);
 const CORS_ORIGINS = parseOriginList(process.env.CORS_ORIGINS || "*");
+const CONTROLLER_PUBLIC_DIR = path.resolve(__dirname, "..", "..", "controller-web", "public");
+const CONTROLLER_JOIN_HTML = path.join(CONTROLLER_PUBLIC_DIR, "join.html");
+const CONTROLLER_INDEX_HTML = path.join(CONTROLLER_PUBLIC_DIR, "index.html");
 
 const app = express();
 const sessions = new Map();
@@ -236,6 +239,20 @@ app.post(`${API_PREFIX}/sessions/:sessionId/close`, (req, res) => {
   closeSession(session, "closed_by_host");
   res.json({ ok: true });
 });
+
+
+if (fs.existsSync(CONTROLLER_PUBLIC_DIR)) {
+  app.use(express.static(CONTROLLER_PUBLIC_DIR, { index: false }));
+
+  app.get("/join/:sessionId", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(CONTROLLER_JOIN_HTML);
+  });
+
+  app.get("/", (req, res) => {
+    res.sendFile(CONTROLLER_INDEX_HTML);
+  });
+}
 
 const server = http.createServer(app);
 
