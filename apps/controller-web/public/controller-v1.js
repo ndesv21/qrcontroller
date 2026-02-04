@@ -57,6 +57,10 @@
   }
 
   function bindUiEvents() {
+    document.addEventListener("selectstart", (event) => {
+      event.preventDefault();
+    });
+
     if (!micButtonEl) return;
 
     if (window.PointerEvent) {

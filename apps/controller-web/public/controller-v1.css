@@ -13,6 +13,7 @@
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -24,6 +25,10 @@ body {
     radial-gradient(1200px 560px at 6% -20%, #1c3e5a 0%, transparent 60%),
     radial-gradient(820px 420px at 120% 0%, #193a57 0%, transparent 58%),
     linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
 }
 
 body.landing {
@@ -80,6 +85,13 @@ code {
   color: var(--danger);
 }
 
+.status,
+.transcript,
+.session-meta,
+.session-meta * {
+  pointer-events: none;
+}
+
 .mic-button {
   width: min(70vw, 280px);
   min-width: 170px;
@@ -89,6 +101,9 @@ code {
   padding: 0;
   cursor: pointer;
   touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
   background:
     radial-gradient(circle at 35% 28%, #fff8a8 0%, var(--yellow-0) 28%, var(--yellow-1) 66%, var(--yellow-2) 100%);
   box-shadow:
