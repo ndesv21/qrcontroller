@@ -30,6 +30,14 @@ The goal is to avoid rebuilding controller logic for each TV/runtime.
    - This is a control transport layer, not a game rules engine.
    - Game-specific behavior belongs in adapters.
 
+## Current v1 Controller Contract (Do Not Drift)
+
+- Keep the phone UI as **one central yellow hold-to-talk button** (no label text).
+- Press+hold starts mic capture; release stops capture and runs STT.
+- Read STT config from session metadata (`speechApiBase`, `speechApiKey`, `sttLanguageCode`).
+- Send canonical `VOICE_TEXT` actions only; Roku/web adapters decide how to interpret transcript text.
+- Keep join/link compatibility (`/join/:sessionId`, query params `t`, `hub`, `cv`) unchanged.
+
 ## AI Agent Reminder
 
 If you are an AI agent modifying this project: preserve compatibility and universality first. Do not optimize for one platform at the expense of the shared protocol.

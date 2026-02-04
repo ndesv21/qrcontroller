@@ -7,45 +7,11 @@
     <link rel="stylesheet" href="/controller-v1.css" />
   </head>
   <body>
-    <main class="controller-shell">
-      <header class="panel">
-        <h1>Phone Controller</h1>
-        <p id="status" class="status">Connecting...</p>
-        <p class="session-meta">Session: <span id="session-id">-</span></p>
-      </header>
-
-      <section class="panel controls-grid">
-        <button class="action key-up" data-action="NAV_UP">Up</button>
-        <button class="action key-left" data-action="NAV_LEFT">Left</button>
-        <button class="action key-select" data-action="SELECT">Select</button>
-        <button class="action key-right" data-action="NAV_RIGHT">Right</button>
-        <button class="action key-down" data-action="NAV_DOWN">Down</button>
-      </section>
-
-      <section class="panel row">
-        <button class="action secondary" data-action="BACK">Back</button>
-        <button class="action secondary" data-action="PLAY_PAUSE">Play/Pause</button>
-      </section>
-
-      <section class="panel row answers">
-        <button class="action answer" data-action="ANSWER_A">A</button>
-        <button class="action answer" data-action="ANSWER_B">B</button>
-        <button class="action answer" data-action="ANSWER_C">C</button>
-      </section>
-
-      <section class="panel">
-        <form id="voice-form" class="voice-form">
-          <label for="voice-input">Voice/Text command</label>
-          <div class="voice-row">
-            <input id="voice-input" type="text" placeholder="e.g. science and space" autocomplete="off" />
-            <button type="submit" class="action">Send</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel row">
-        <button id="reconnect-btn" class="action tertiary">Reconnect</button>
-      </section>
+    <main class="mic-shell">
+      <p id="status" class="status">Connecting...</p>
+      <button id="mic-button" class="mic-button" type="button" aria-label="Hold to speak"></button>
+      <p id="transcript" class="transcript">...</p>
+      <p class="session-meta"><span id="session-id">-</span></p>
     </main>
 
     <script src="/controller-v1.js"></script>
