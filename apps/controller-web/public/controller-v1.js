@@ -20,6 +20,7 @@
     speechApiKey: "",
     sttLanguageCode: "en-US",
     sttBusy: false,
+    sttWarmStarted: false,
     recording: false,
     recordStartedAt: 0,
     activePointerId: null,
@@ -149,6 +150,7 @@
     }
 
     setStatus("Ready. Hold the button to speak.");
+    startSttWarmup();
   }
 
   function openSocket(wsBase) {
@@ -374,6 +376,22 @@
     } finally {
       state.sttBusy = false;
     }
+  }
+
+  function startSttWarmup() {
+    if (state.sttWarmStarted || !state.speechApiBase) return;
+    state.sttWarmStarted = true;
+
+    const silenceBytes = new Uint8Array(3200);
+    const silenceBase64 = arrayBufferToBase64(silenceBytes.buffer);
+
+    requestTranscript(silenceBase64, 16000)
+      .then(() => {
+        // warm-up only
+      })
+      .catch(() => {
+        // best-effort warm-up; ignore errors
+      });
   }
 
   async function requestTranscript(audioContentBase64, sampleRateHertz) {
