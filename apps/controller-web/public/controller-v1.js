@@ -125,12 +125,18 @@
 
   function applySpeechConfig(session) {
     const metadata = session && session.metadata ? session.metadata : {};
-    const speechApiBase = sanitizeSpeechBase(metadata.speechApiBase || "");
+    const speechApiBase = sanitizeSpeechBase(
+      metadata.speechApiBase || metadata.speechapibase || metadata.speech_api_base || ""
+    );
+    const speechApiKey =
+      metadata.speechApiKey || metadata.speechapikey || metadata.speech_api_key || "";
+    const sttLanguageCode =
+      metadata.sttLanguageCode || metadata.sttlanguagecode || metadata.stt_language_code || "en-US";
 
     state.speechApiBase = speechApiBase;
-    state.speechApiKey = typeof metadata.speechApiKey === "string" ? metadata.speechApiKey : "";
-    state.sttLanguageCode = typeof metadata.sttLanguageCode === "string" && metadata.sttLanguageCode
-      ? metadata.sttLanguageCode
+    state.speechApiKey = typeof speechApiKey === "string" ? speechApiKey : "";
+    state.sttLanguageCode = typeof sttLanguageCode === "string" && sttLanguageCode
+      ? sttLanguageCode
       : "en-US";
 
     if (!state.speechApiBase) {
