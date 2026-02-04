@@ -9,6 +9,9 @@
   --yellow-0: #ffd81a;
   --yellow-1: #fdbb00;
   --yellow-2: #f59f00;
+  --green-0: #8dff9e;
+  --green-1: #39db66;
+  --green-2: #14b94a;
 }
 
 * {
@@ -16,19 +19,32 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+html,
 body {
   margin: 0;
-  min-height: 100vh;
-  font-family: "Avenir Next", "Trebuchet MS", sans-serif;
-  color: var(--text);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(1200px 560px at 6% -20%, #1c3e5a 0%, transparent 60%),
     radial-gradient(820px 420px at 120% 0%, #193a57 0%, transparent 58%),
     linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+  color: var(--text);
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
   touch-action: manipulation;
+  overscroll-behavior: none;
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
 }
 
 body.landing {
@@ -62,23 +78,25 @@ code {
 }
 
 .mic-shell {
-  min-height: 100vh;
-  width: min(620px, 100%);
-  margin: 0 auto;
-  padding: 28px 22px 22px;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: clamp(14px, 2.8vh, 30px) clamp(14px, 4.6vw, 24px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 22px;
+  gap: clamp(16px, 2.8vh, 28px);
 }
 
 .status {
   margin: 0;
   min-height: 1.4em;
   color: var(--muted);
-  font-size: 1rem;
+  font-size: clamp(1.05rem, 4vw, 1.42rem);
+  line-height: 1.22;
   text-align: center;
+  max-width: min(96vw, 900px);
 }
 
 .status.is-error {
@@ -93,8 +111,8 @@ code {
 }
 
 .mic-button {
-  width: min(70vw, 280px);
-  min-width: 170px;
+  width: min(76vmin, 320px);
+  min-width: 190px;
   aspect-ratio: 1;
   border: 0;
   border-radius: 999px;
@@ -105,13 +123,18 @@ code {
   user-select: none;
   -webkit-touch-callout: none;
   background:
-    radial-gradient(circle at 35% 28%, #fff8a8 0%, var(--yellow-0) 28%, var(--yellow-1) 66%, var(--yellow-2) 100%);
+    radial-gradient(circle at 35% 28%, #fff8a8 0%, var(--yellow-0) 30%, var(--yellow-1) 68%, var(--yellow-2) 100%);
   box-shadow:
-    0 22px 48px #00000066,
-    inset 0 12px 18px #ffffff7a,
-    inset 0 -14px 24px #00000030;
+    0 24px 52px #00000066,
+    0 0 0 #3ce56f00,
+    inset 0 12px 18px #ffffff78,
+    inset 0 -15px 24px #00000030;
   transform: scale(1);
-  transition: transform 90ms ease, box-shadow 90ms ease, filter 90ms ease;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 260ms ease,
+    filter 260ms ease,
+    background 260ms ease;
 }
 
 .mic-button::before {
@@ -124,6 +147,7 @@ code {
   border-radius: 999px;
   background: #ffffff80;
   filter: blur(0.2px);
+  transition: background 220ms ease;
 }
 
 .mic-button:focus-visible {
@@ -137,37 +161,47 @@ code {
 
 .mic-button.is-pressed,
 .mic-button:active {
-  transform: scale(0.95);
+  transform: scale(0.94);
+  background:
+    radial-gradient(circle at 35% 28%, #e8ffe9 0%, var(--green-0) 31%, var(--green-1) 66%, var(--green-2) 100%);
   box-shadow:
-    0 10px 22px #0000005c,
-    inset 0 9px 14px #ffffff5f,
-    inset 0 -8px 14px #00000040;
-  filter: saturate(1.08);
+    0 18px 40px #00000055,
+    0 0 120px 18px #3ce56f5c,
+    inset 0 10px 16px #ffffff6f,
+    inset 0 -9px 16px #00000035;
+  filter: saturate(1.13);
+  animation: mic-glow 1.5s ease-in-out infinite;
+}
+
+.mic-button.is-pressed::before,
+.mic-button:active::before {
+  background: #f1fff2b8;
+}
+
+@keyframes mic-glow {
+  0%,
+  100% {
+    filter: saturate(1.08) brightness(1);
+  }
+  50% {
+    filter: saturate(1.22) brightness(1.03);
+  }
 }
 
 .transcript {
   margin: 0;
   min-height: 1.4em;
   color: #f4fbff;
-  font-size: 1.03rem;
+  font-size: clamp(1.12rem, 4.6vw, 1.6rem);
+  line-height: 1.22;
   text-align: center;
   word-break: break-word;
+  max-width: min(96vw, 980px);
 }
 
 .session-meta {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: clamp(0.86rem, 2.8vw, 1rem);
   opacity: 0.8;
-}
-
-@media (max-width: 420px) {
-  .mic-shell {
-    padding-inline: 16px;
-  }
-
-  .status,
-  .transcript {
-    font-size: 0.95rem;
-  }
 }

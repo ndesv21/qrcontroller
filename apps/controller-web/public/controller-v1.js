@@ -6,6 +6,11 @@
   const transcriptEl = document.getElementById("transcript");
   const micButtonEl = document.getElementById("mic-button");
 
+  const CUE_SOUND_PATHS = {
+    start: "/sounds/startrecording.m4a",
+    stop: "/sounds/stoprecording.m4a",
+  };
+
   const state = {
     hubBase: "",
     sessionId: "",
@@ -25,6 +30,10 @@
     recordStartedAt: 0,
     activePointerId: null,
     holdRequested: false,
+    cueSounds: {
+      start: null,
+      stop: null,
+    },
     capture: {
       stream: null,
       audioContext: null,
@@ -48,6 +57,7 @@
     }
 
     bindUiEvents();
+    initCueSounds();
 
     if (!state.sessionId || !state.joinToken || !state.hubBase) {
       setStatus("Missing session/token/hub in URL", true);
@@ -88,6 +98,41 @@
     micButtonEl.addEventListener("contextmenu", (event) => {
       event.preventDefault();
     });
+  }
+
+  function initCueSounds() {
+    state.cueSounds.start = createCueSound(CUE_SOUND_PATHS.start);
+    state.cueSounds.stop = createCueSound(CUE_SOUND_PATHS.stop);
+  }
+
+  function createCueSound(src) {
+    try {
+      const audio = new Audio(src);
+      audio.preload = "auto";
+      audio.volume = 0.9;
+      audio.playsInline = true;
+      return audio;
+    } catch {
+      return null;
+    }
+  }
+
+  function playCueSound(kind) {
+    const audio = state.cueSounds[kind];
+    if (!audio) return;
+
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {
+          // iOS may still block in some contexts; safe to ignore.
+        });
+      }
+    } catch {
+      // no-op
+    }
   }
 
   async function joinSession() {
@@ -255,6 +300,7 @@
       }
       state.recording = true;
       state.recordStartedAt = Date.now();
+      playCueSound("start");
       setStatus("Listening...");
     } catch (err) {
       state.holdRequested = false;
@@ -288,6 +334,7 @@
 
     state.recording = false;
     setMicPressed(false);
+    playCueSound("stop");
     finalizeCapture();
   }
 
