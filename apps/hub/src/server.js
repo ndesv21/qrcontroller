@@ -16,7 +16,7 @@ const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS || String(2 * 60 * 60
 const EVENT_HISTORY_LIMIT = parseInt(process.env.EVENT_HISTORY_LIMIT || "300", 10);
 const MAX_POLL_LIMIT = 200;
 const SESSION_STORE_FILE = process.env.SESSION_STORE_FILE || "";
-const ROOM_CODE_SIZE = 4;
+const ROOM_CODE_SIZE = 6;
 const HOST_STALE_MS = parseInt(process.env.HOST_STALE_MS || "12000", 10);
 const MAX_CONTROLLERS_PER_SESSION = clampInt(process.env.MAX_CONTROLLERS_PER_SESSION || "1", 1, 10);
 const CODE_JOIN_WINDOW_MS = parseInt(process.env.CODE_JOIN_WINDOW_MS || "60000", 10);
@@ -857,7 +857,7 @@ function releaseRoomCode(code, sessionId) {
 }
 
 function makeRoomCode() {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const alphabet = "0123456789";
   let out = "";
   for (let i = 0; i < ROOM_CODE_SIZE; i += 1) {
     const idx = crypto.randomInt(0, alphabet.length);
@@ -868,7 +868,7 @@ function makeRoomCode() {
 
 function sanitizeRoomCode(value) {
   if (typeof value !== "string") return "";
-  return value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, ROOM_CODE_SIZE);
+  return value.replace(/[^0-9]/g, "").slice(0, ROOM_CODE_SIZE);
 }
 
 function allowCodeJoinAttempt(ipRaw) {

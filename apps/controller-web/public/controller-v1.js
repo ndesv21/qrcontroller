@@ -21,7 +21,8 @@
     start: "/sounds/startrecording.m4a",
     stop: "/sounds/stoprecording.m4a",
   };
-  const DISCOVERY_PROMPT = "Scan QR code with camera or add room code:";
+  const ROOM_CODE_LENGTH = 6;
+  const DISCOVERY_PROMPT = "Scan QR code with camera or enter room code:";
 
   const state = {
     hubBase: "",
@@ -200,8 +201,8 @@
     const code = sanitizeRoomCode(roomCodeInputEl.value || "");
     roomCodeInputEl.value = code;
 
-    if (code.length !== 4) {
-      setStatus("Enter the 4-letter room code.", true);
+    if (code.length !== ROOM_CODE_LENGTH) {
+      setStatus(`Enter the ${ROOM_CODE_LENGTH}-digit room code.`, true);
       return;
     }
 
@@ -284,7 +285,7 @@
       if (!response.ok || !data.ok) {
         const errCode = String(data.error || "join_failed");
         if (errCode === "session_closed" || errCode === "session_not_found") {
-          enterDiscoveryMode("Session ended. Scan QR code with camera or add room code.", true, true);
+          enterDiscoveryMode("Session ended. Scan QR code with camera or enter room code.", true, true);
           return;
         }
         throw new Error(errCode);
@@ -371,7 +372,7 @@
           reason.includes("session_closed") ||
           reason.includes("closed_by_host")
         ) {
-          enterDiscoveryMode("TV disconnected. Scan QR code with camera or add room code.", true, true);
+          enterDiscoveryMode("TV disconnected. Scan QR code with camera or enter room code.", true, true);
           return;
         }
 
@@ -408,7 +409,7 @@
     }
 
     if (message.type === "presence" && message.actor && message.actor.role === "host" && message.actor.state === "left") {
-      enterDiscoveryMode("TV disconnected. Scan QR code with camera or add room code.", true, true);
+      enterDiscoveryMode("TV disconnected. Scan QR code with camera or enter room code.", true, true);
       return;
     }
 
@@ -792,7 +793,7 @@
     if (typeof window.BarcodeDetector !== "function") {
       setStatus("In-app QR scan is not supported on this browser. Use Camera app or room code.", true);
       if (joinHelpEl) {
-        joinHelpEl.textContent = "Use your phone camera app or enter the 4-letter room code.";
+        joinHelpEl.textContent = `Use your phone camera app or enter the ${ROOM_CODE_LENGTH}-digit room code.`;
       }
       return;
     }
@@ -875,8 +876,8 @@
   }
 
   function handleScannedValue(raw) {
-    if (/^[a-z]{4}$/i.test(raw)) {
-      joinSessionByCode(raw.toUpperCase());
+    if (new RegExp(`^\\\\d{${ROOM_CODE_LENGTH}}$`).test(raw)) {
+      joinSessionByCode(raw);
       return;
     }
 
@@ -970,7 +971,8 @@
       sessionIdEl.textContent = `Session: ${state.sessionId || "-"}`;
     }
     if (roomCodeEl) {
-      roomCodeEl.textContent = `Code: ${state.roomCode || "----"}`;
+      const placeholder = "-".repeat(ROOM_CODE_LENGTH);
+      roomCodeEl.textContent = `Code: ${state.roomCode || placeholder}`;
     }
   }
 
@@ -1112,7 +1114,7 @@
 
   function sanitizeRoomCode(value) {
     if (typeof value !== "string") return "";
-    return value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
+    return value.replace(/[^0-9]/g, "").slice(0, ROOM_CODE_LENGTH);
   }
 
   function hubUrl(path) {
