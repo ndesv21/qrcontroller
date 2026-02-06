@@ -21,7 +21,7 @@
     start: "/sounds/startrecording.m4a",
     stop: "/sounds/stoprecording.m4a",
   };
-  const ROOM_CODE_LENGTH = 6;
+  const ROOM_CODE_LENGTH = 4;
   const DISCOVERY_PROMPT = "Scan QR code with camera or enter room code:";
 
   const state = {
