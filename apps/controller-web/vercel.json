@@ -33,6 +33,10 @@
     {
       "source": "/join/(.*)",
       "destination": "/join.html"
+    },
+    {
+      "source": "/challenge/(.*)",
+      "destination": "/join.html"
     }
   ]
 }

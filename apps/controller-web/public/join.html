@@ -3,43 +3,84 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0f1f31" />
+    <meta name="theme-color" content="#081d58" />
     <title>Phone Controller</title>
-    <link rel="stylesheet" href="/controller-v1.css" />
+    <link rel="stylesheet" href="/controller-v1.css?v=20260212_14" />
   </head>
   <body>
-    <main class="mic-shell">
-      <p id="status" class="status">Connecting...</p>
+    <main class="app-shell">
+      <img
+        class="screen-logo"
+        src="https://d3tswg7dtbmd2x.cloudfront.net/qr/minilogo.png"
+        width="56"
+        height="22"
+        alt="Trivia Champions"
+      />
 
-      <section id="join-tools" class="join-tools" hidden>
-        <div class="qr-illustration" aria-hidden="true">QR</div>
-        <p class="join-title">Scan QR code with camera or enter room code:</p>
-        <button id="scan-button" class="join-btn" type="button">Open Camera</button>
-        <div class="code-row">
-          <input id="room-code-input" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" spellcheck="false" maxlength="4" placeholder="1234" aria-label="Room code" />
-          <button id="code-join-button" class="join-btn" type="button">Join</button>
-        </div>
-        <p id="join-help" class="join-help"></p>
+      <section id="controller-shell" class="mic-shell">
+        <section id="join-tools" class="join-tools" hidden>
+          <p class="home-title">Play on:</p>
+          <img
+            class="home-platform"
+            src="https://d3tswg7dtbmd2x.cloudfront.net/qr/roku.png"
+            width="156"
+            alt="Roku"
+          />
+          <p class="join-title">
+            Enter game code or
+            <button id="scan-button" class="scan-link-btn" type="button">scan QR</button>
+          </p>
+          <div class="code-row">
+            <input
+              id="room-code-input"
+              type="tel"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              autocomplete="one-time-code"
+              spellcheck="false"
+              maxlength="7"
+              placeholder="0000"
+              aria-label="Room code"
+            />
+          </div>
+          <button id="code-join-button" class="btn-gold btn-gold-home" type="button">Join</button>
+          <p class="home-footer">
+            Looking for something else?
+            <button id="create-challenge-button" class="join-link-btn" type="button">Create a web challenge</button>
+          </p>
+          <p id="join-help" class="join-help"></p>
+        </section>
+
+        <p id="status" class="status">Connecting...</p>
+
+        <button id="mic-button" class="mic-button" type="button" aria-label="Hold to speak">
+          <img
+            id="mic-image"
+            class="mic-image"
+            src="https://d3tswg7dtbmd2x.cloudfront.net/qr/mic.png"
+            alt=""
+            aria-hidden="true"
+          />
+          <span id="mic-label" class="mic-label"></span>
+        </button>
+
+        <p id="transcript" class="transcript">...</p>
+
+        <p class="session-meta" hidden>
+          <span id="session-id">Session: -</span>
+          <span class="session-sep">•</span>
+          <span id="room-code">Code: ----</span>
+        </p>
+
+        <section id="scan-panel" class="scan-panel" hidden>
+          <video id="scan-video" class="scan-video" playsinline muted></video>
+          <button id="scan-stop-button" class="btn-white" type="button">Stop camera</button>
+        </section>
       </section>
 
-      <button id="mic-button" class="mic-button" type="button" aria-label="Hold to speak">
-        <span id="mic-label" class="mic-label"></span>
-      </button>
-
-      <p id="transcript" class="transcript">...</p>
-
-      <p class="session-meta" hidden>
-        <span id="session-id">Session: -</span>
-        <span class="session-sep">•</span>
-        <span id="room-code">Code: ----</span>
-      </p>
-
-      <section id="scan-panel" class="scan-panel" hidden>
-        <video id="scan-video" class="scan-video" playsinline muted></video>
-        <button id="scan-stop-button" class="join-btn secondary" type="button">Stop Scan</button>
-      </section>
+      <section id="challenge-shell" class="challenge-shell" hidden aria-live="polite"></section>
     </main>
 
-    <script src="/controller-v1.js"></script>
+    <script src="/controller-v1.js?v=20260212_14"></script>
   </body>
 </html>

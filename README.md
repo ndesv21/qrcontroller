@@ -48,9 +48,29 @@ python3 -m http.server 3000
 export CONTROLLER_BASE_URL="http://localhost:3000"
 export HUB_PUBLIC_BASE_URL="http://localhost:8080"
 export SESSION_STORE_FILE="/tmp/qrcontroller-sessions.json"
+export CHALLENGE_STORE_FILE="/tmp/qrcontroller-challenges.json"
+export CHALLENGE_TTL_MS="604800000"
+export TRIVIA_CONTENT_BASE_URL="https://ff64iccveag5dlj26gr55qy7ii0igdvc.lambda-url.us-east-1.on.aws"
+export TRIVIA_CONTENT_API_KEY="YOUR_API_KEY"
+export QR_GA_MEASUREMENT_ID="G-XXXXXXXXXX"
+export QR_GA_DEBUG="0"
 ```
 
 `SESSION_STORE_FILE` keeps sessions on disk so restart/upgrade reconnects are less disruptive.
+`CHALLENGE_STORE_FILE` keeps temporary challenge snapshots and attempt state on disk.
+`QR_GA_MEASUREMENT_ID` enables GA4 event tracking on controller/challenge pages.
+
+## Challenge APIs (v1)
+
+- `GET /api/v1/trivia/categories`
+- `GET /api/v1/trivia/questions?category=...`
+- `POST /api/v1/challenges`
+- `GET /api/v1/challenges/:challengeId`
+- `POST /api/v1/challenges/:challengeId/attempts`
+
+Public challenge links use:
+
+- `/challenge/:challengeId?hub=...`
 
 ## Session Flow
 

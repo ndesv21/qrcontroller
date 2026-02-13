@@ -16,6 +16,13 @@ const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS || String(2 * 60 * 60
 const EVENT_HISTORY_LIMIT = parseInt(process.env.EVENT_HISTORY_LIMIT || "300", 10);
 const MAX_POLL_LIMIT = 200;
 const SESSION_STORE_FILE = process.env.SESSION_STORE_FILE || "";
+const CHALLENGE_STORE_FILE =
+  process.env.CHALLENGE_STORE_FILE || (SESSION_STORE_FILE ? `${SESSION_STORE_FILE}.challenges` : "");
+const CHALLENGE_TTL_MS = parseInt(
+  process.env.CHALLENGE_TTL_MS || String(7 * 24 * 60 * 60 * 1000),
+  10
+);
+const CHALLENGE_MAX_QUESTIONS = clampInt(process.env.CHALLENGE_MAX_QUESTIONS || "25", 1, 100);
 const ROOM_CODE_SIZE = 4;
 const HOST_STALE_MS = parseInt(process.env.HOST_STALE_MS || "12000", 10);
 const MAX_CONTROLLERS_PER_SESSION = clampInt(process.env.MAX_CONTROLLERS_PER_SESSION || "1", 1, 10);
@@ -24,6 +31,29 @@ const CODE_JOIN_MAX_ATTEMPTS = parseInt(process.env.CODE_JOIN_MAX_ATTEMPTS || "3
 
 const CONTROLLER_BASE_URL = stripTrailingSlash(process.env.CONTROLLER_BASE_URL || "http://localhost:3000");
 const HUB_PUBLIC_BASE_URL = stripTrailingSlash(process.env.HUB_PUBLIC_BASE_URL || `http://localhost:${PORT}`);
+const GA_MEASUREMENT_ID = sanitizeGaMeasurementId(
+  process.env.QR_GA_MEASUREMENT_ID || process.env.GA_MEASUREMENT_ID || ""
+);
+const GA_DEBUG_ENABLED = parseBooleanFlag(process.env.QR_GA_DEBUG || process.env.GA_DEBUG || "");
+const TRIVIA_CONTENT_BASE_URL = stripTrailingSlash(
+  process.env.TRIVIA_CONTENT_BASE_URL ||
+    process.env.TRIVIA_API_BASE_URL ||
+    "https://ff64iccveag5dlj26gr55qy7ii0igdvc.lambda-url.us-east-1.on.aws"
+);
+const TRIVIA_CONTENT_API_KEY = process.env.TRIVIA_CONTENT_API_KEY || process.env.TRIVIA_API_KEY || "";
+const TRIVIA_FETCH_TIMEOUT_MS = clampInt(process.env.TRIVIA_FETCH_TIMEOUT_MS || "7000", 1000, 30000);
+const TRIVIA_MAX_QUESTIONS = clampInt(process.env.TRIVIA_MAX_QUESTIONS || "60", 1, 300);
+const CHALLENGE_LOOP_GAMEPLAY_URL = sanitizeMediaUrl(
+  process.env.CHALLENGE_LOOP_GAMEPLAY_URL || "https://sotw-assets.s3.us-east-1.amazonaws.com/bgloop.mp3"
+);
+const CHALLENGE_LOOP_MENU_URL = sanitizeMediaUrl(
+  process.env.CHALLENGE_LOOP_MENU_URL || "https://sotw-assets.s3.us-east-1.amazonaws.com/loop.mp3"
+);
+const AUDIO_PROXY_TIMEOUT_MS = clampInt(process.env.AUDIO_PROXY_TIMEOUT_MS || "12000", 1000, 60000);
+const AUDIO_PROXY_ALLOWED_HOSTS = parseHostList(
+  process.env.AUDIO_PROXY_ALLOWED_HOSTS ||
+    "sotw-assets.s3.us-east-1.amazonaws.com,d3tswg7dtbmd2x.cloudfront.net"
+);
 const CORS_ORIGINS = parseOriginList(process.env.CORS_ORIGINS || "*");
 const CONTROLLER_PUBLIC_DIR = path.resolve(__dirname, "..", "..", "controller-web", "public");
 const CONTROLLER_JOIN_HTML = path.join(CONTROLLER_PUBLIC_DIR, "join.html");
@@ -31,6 +61,7 @@ const CONTROLLER_INDEX_HTML = path.join(CONTROLLER_PUBLIC_DIR, "index.html");
 
 const app = express();
 const sessions = new Map();
+const challenges = new Map();
 const sessionCodes = new Map();
 const codeJoinAttempts = new Map();
 const persistState = { timer: null };
@@ -60,6 +91,312 @@ app.get(`${API_PREFIX}/meta`, (req, res) => {
     protocolVersion: PROTOCOL_VERSION,
     controllerBaseUrl: CONTROLLER_BASE_URL,
     hubBaseUrl: HUB_PUBLIC_BASE_URL,
+    gaMeasurementId: GA_MEASUREMENT_ID || "",
+    gaDebug: GA_DEBUG_ENABLED,
+  });
+});
+
+app.get(`${API_PREFIX}/audio/loop/:kind`, async (req, res) => {
+  const kind = req.params.kind === "gameplay" ? "gameplay" : req.params.kind === "menu" ? "menu" : "";
+  if (!kind) {
+    res.status(400).json({ ok: false, error: "invalid_loop_kind" });
+    return;
+  }
+
+  const src = sanitizeMediaUrl(typeof req.query.src === "string" ? req.query.src : "");
+  let targetUrl = src;
+  if (!targetUrl) {
+    targetUrl = kind === "gameplay" ? CHALLENGE_LOOP_GAMEPLAY_URL : CHALLENGE_LOOP_MENU_URL;
+  }
+
+  if (!targetUrl) {
+    res.status(503).json({ ok: false, error: "loop_source_missing" });
+    return;
+  }
+
+  if (!isAllowedAudioProxyUrl(targetUrl)) {
+    res.status(400).json({ ok: false, error: "loop_source_not_allowed" });
+    return;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AUDIO_PROXY_TIMEOUT_MS);
+    timer.unref?.();
+
+    const upstream = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!upstream.ok) {
+      res.status(502).json({ ok: false, error: "audio_upstream_failed" });
+      return;
+    }
+
+    const data = Buffer.from(await upstream.arrayBuffer());
+    const contentType = upstream.headers.get("content-type") || "audio/mpeg";
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", String(data.length));
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=300");
+    res.setHeader("X-Loop-Kind", kind);
+    res.send(data);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: "audio_proxy_failed" });
+  }
+});
+
+app.get(`${API_PREFIX}/trivia/categories`, async (req, res) => {
+  try {
+    const data = await fetchTriviaPayload([
+      "/categories",
+      "/content/categories",
+    ]);
+    const categories = normalizeTriviaCategories(data);
+    res.json({
+      ok: true,
+      categories,
+      count: categories.length,
+    });
+  } catch (err) {
+    res.status(502).json({
+      ok: false,
+      error: "trivia_categories_unavailable",
+      message: String(err.message || err),
+    });
+  }
+});
+
+app.get(`${API_PREFIX}/trivia/questions`, async (req, res) => {
+  const category = sanitizeCategoryId(req.query.category);
+  if (!category) {
+    res.status(400).json({ ok: false, error: "invalid_category" });
+    return;
+  }
+
+  try {
+    const encoded = encodeURIComponent(category);
+    const data = await fetchTriviaPayload([
+      `/questions?category=${encoded}`,
+      `/content/questions?category=${encoded}`,
+    ]);
+    const questions = normalizeTriviaQuestions(data).slice(0, TRIVIA_MAX_QUESTIONS);
+    res.json({
+      ok: true,
+      category,
+      questions,
+      count: questions.length,
+    });
+  } catch (err) {
+    res.status(502).json({
+      ok: false,
+      error: "trivia_questions_unavailable",
+      message: String(err.message || err),
+    });
+  }
+});
+
+app.post(`${API_PREFIX}/challenges`, (req, res) => {
+  const body = req.body || {};
+  const senderName = sanitizeDisplayName(body.senderName || body.name || "Player");
+  const source = sanitizeSimple(body.source || "shared") || "shared";
+  const bgAudioUrl = sanitizeMediaUrl(body.bgAudioUrl || body.backgroundAudioUrl || "");
+  const category = normalizeCategory(body.category || {
+    id: body.categoryId,
+    name: body.categoryName || body.category,
+  });
+  const rules = normalizeRules(body.rules || {});
+  const title = sanitizeTitle(body.title);
+  const questions = normalizeChallengeQuestions(body.questions || []);
+
+  if (questions.length === 0) {
+    logInvalidChallengePayload(body);
+    res.status(400).json({ ok: false, error: "invalid_questions" });
+    return;
+  }
+
+  const senderAttempt = normalizeSenderAttempt(body.senderAttempt || body.senderRun || {}, questions);
+  const nowMs = Date.now();
+  const challengeId = makeId(10);
+  const createdAt = new Date(nowMs).toISOString();
+
+  const challenge = {
+    id: challengeId,
+    source,
+    bgAudioUrl,
+    title,
+    senderName,
+    category,
+    rules,
+    questions,
+    senderAttempt,
+    attempts: [],
+    createdAt,
+    updatedAt: createdAt,
+    expiresAt: new Date(nowMs + CHALLENGE_TTL_MS).toISOString(),
+  };
+
+  challenges.set(challenge.id, challenge);
+  schedulePersist();
+  console.log(
+    `[challenge] created id=${challenge.id} sender=${challenge.senderName} category=${challenge.category.id} questions=${challenge.questions.length}`
+  );
+
+  res.status(201).json({
+    ok: true,
+    challenge: serializeChallenge(challenge, { includeCorrectAnswers: false }),
+    shareUrl: buildChallengeUrl(challenge),
+  });
+});
+
+app.get(`${API_PREFIX}/challenges/:challengeId`, (req, res) => {
+  const resolved = getChallenge(req.params.challengeId, { touch: true, withError: true });
+  if (!resolved.challenge) {
+    const status = resolved.error === "challenge_expired" ? 410 : 404;
+    res.status(status).json({ ok: false, error: resolved.error || "challenge_not_found" });
+    return;
+  }
+  const challenge = resolved.challenge;
+
+  const participantId = sanitizeParticipantId(req.query.participantId);
+  const existingAttempt = participantId
+    ? challenge.attempts.find((attempt) => attempt.participantId === participantId) || null
+    : null;
+
+  res.json({
+    ok: true,
+    challenge: serializeChallenge(challenge, { includeCorrectAnswers: true }),
+    viewer: {
+      participantId: participantId || "",
+      hasAttempted: !!existingAttempt,
+      attempt: existingAttempt ? serializeAttempt(existingAttempt, { includeCorrectAnswers: true }) : null,
+    },
+  });
+});
+
+app.get(`${API_PREFIX}/challenges/:challengeId/qr`, async (req, res) => {
+  const resolved = getChallenge(req.params.challengeId, { touch: true, withError: true });
+  if (!resolved.challenge) {
+    const status = resolved.error === "challenge_expired" ? 410 : 404;
+    res.status(status).json({ ok: false, error: resolved.error || "challenge_not_found" });
+    return;
+  }
+
+  const challenge = resolved.challenge;
+  const width = clampInt(req.query.width, 128, 900);
+  const format = String(req.query.format || "png").toLowerCase();
+  const challengeUrl = buildChallengeUrl(challenge);
+
+  try {
+    if (format === "svg") {
+      const svg = await QRCode.toString(challengeUrl, {
+        type: "svg",
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width,
+      });
+      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+      res.send(svg);
+      return;
+    }
+
+    const png = await QRCode.toBuffer(challengeUrl, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width,
+    });
+    res.setHeader("Content-Type", "image/png");
+    res.send(png);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "qr_generation_failed" });
+  }
+});
+
+app.post(`${API_PREFIX}/challenges/:challengeId/attempts`, (req, res) => {
+  const resolved = getChallenge(req.params.challengeId, { touch: true, withError: true });
+  if (!resolved.challenge) {
+    const status = resolved.error === "challenge_expired" ? 410 : 404;
+    res.status(status).json({ ok: false, error: resolved.error || "challenge_not_found" });
+    return;
+  }
+  const challenge = resolved.challenge;
+
+  const body = req.body || {};
+  const participantId = sanitizeParticipantId(readField(body, ["participantId", "participantid"])) || makeId(12);
+  const participantName = sanitizeDisplayName(
+    readField(body, ["participantName", "participantname", "name"]) || "Player"
+  );
+
+  const existingAttempt = challenge.attempts.find((attempt) => attempt.participantId === participantId);
+  if (existingAttempt) {
+    res.json({
+      ok: true,
+      alreadyAttempted: true,
+      attempt: serializeAttempt(existingAttempt, { includeCorrectAnswers: true }),
+      challenge: serializeChallenge(challenge, { includeCorrectAnswers: false }),
+    });
+    return;
+  }
+
+  const answerMap = new Map();
+  const submittedAnswers = Array.isArray(body.answers) ? body.answers : [];
+  for (const item of submittedAnswers) {
+    if (!isRecord(item)) continue;
+    const questionId = sanitizeQuestionId(readField(item, ["questionId", "questionid", "id"]));
+    if (!questionId) continue;
+    const selectedRaw = readField(item, ["selectedIndex", "selectedindex", "answerIndex", "answerindex"]);
+    const selectedIndex = Number.isFinite(selectedRaw) ? Math.floor(Number(selectedRaw)) : -1;
+    answerMap.set(questionId, selectedIndex);
+  }
+
+  let score = 0;
+  let correctCount = 0;
+  const breakdown = [];
+
+  for (const question of challenge.questions) {
+    const selectedIndex = answerMap.has(question.questionId) ? answerMap.get(question.questionId) : -1;
+    const isCorrect = selectedIndex === question.correctIndex;
+    if (isCorrect) {
+      correctCount += 1;
+      score += question.points;
+    }
+
+    breakdown.push({
+      questionId: question.questionId,
+      questionText: question.questionText,
+      choices: question.choices,
+      selectedIndex,
+      correctIndex: question.correctIndex,
+      isCorrect,
+      pointsAwarded: isCorrect ? question.points : 0,
+      pointsPossible: question.points,
+    });
+  }
+
+  const attempt = {
+    id: makeId(12),
+    participantId,
+    participantName,
+    score,
+    correctCount,
+    totalQuestions: challenge.questions.length,
+    createdAt: nowIso(),
+    answers: breakdown,
+  };
+
+  challenge.attempts.push(attempt);
+  touchChallenge(challenge);
+  schedulePersist();
+
+  res.status(201).json({
+    ok: true,
+    alreadyAttempted: false,
+    participantId,
+    attempt: serializeAttempt(attempt, { includeCorrectAnswers: true }),
+    challenge: serializeChallenge(challenge, { includeCorrectAnswers: false }),
   });
 });
 
@@ -187,6 +524,9 @@ app.post(`${API_PREFIX}/sessions/:sessionId/events`, (req, res) => {
 
   const envelope = buildEnvelope(session, role, body.message || {}, "http");
   const saved = appendEvent(session, envelope);
+  if (saved.fromRole === "host" && saved.action) {
+    console.log(`[events] host action=${saved.action} session=${session.id} to=${saved.toRole}`);
+  }
   routeEvent(session, saved);
 
   res.status(201).json({
@@ -308,8 +648,19 @@ if (fs.existsSync(CONTROLLER_PUBLIC_DIR)) {
     res.sendFile(CONTROLLER_JOIN_HTML);
   });
 
+  app.get("/challenge/:challengeId", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(CONTROLLER_JOIN_HTML);
+  });
+
+  app.get("/challenge", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(CONTROLLER_JOIN_HTML);
+  });
+
   app.get("/", (req, res) => {
-    res.sendFile(CONTROLLER_INDEX_HTML);
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(CONTROLLER_JOIN_HTML);
   });
 }
 
@@ -415,11 +766,15 @@ wss.on("connection", (ws, req) => {
 });
 
 loadSessionsFromDisk();
+loadChallengesFromDisk();
 
 server.listen(PORT, () => {
   console.log(`[hub] listening on ${PORT}`);
   console.log(`[hub] controller base ${CONTROLLER_BASE_URL}`);
   console.log(`[hub] public hub base ${HUB_PUBLIC_BASE_URL}`);
+  if (GA_MEASUREMENT_ID) {
+    console.log(`[hub] ga measurement ${GA_MEASUREMENT_ID}`);
+  }
 });
 
 setInterval(() => {
@@ -451,6 +806,7 @@ setInterval(() => {
   }
 
   pruneCodeJoinAttempts(now);
+  pruneChallenges(now);
 }, 5 * 1000).unref();
 
 let shutdownStarted = false;
@@ -536,7 +892,8 @@ function serializeSession(session, includeSecrets) {
 function buildJoinUrl(session) {
   const hub = encodeURIComponent(HUB_PUBLIC_BASE_URL);
   const rc = encodeURIComponent(session.roomCode || "");
-  return `${CONTROLLER_BASE_URL}/join/${encodeURIComponent(session.id)}?t=${encodeURIComponent(session.joinToken)}&hub=${hub}&cv=${encodeURIComponent(session.clientVersion)}&rc=${rc}`;
+  const url = `${CONTROLLER_BASE_URL}/join/${encodeURIComponent(session.id)}?t=${encodeURIComponent(session.joinToken)}&hub=${hub}&cv=${encodeURIComponent(session.clientVersion)}&rc=${rc}`;
+  return withControllerAnalytics(url);
 }
 
 function buildEnvelope(session, fromRole, incoming, source) {
@@ -751,8 +1108,39 @@ function loadSessionsFromDisk() {
   }
 }
 
+function loadChallengesFromDisk() {
+  if (!CHALLENGE_STORE_FILE) return;
+
+  try {
+    if (!fs.existsSync(CHALLENGE_STORE_FILE)) return;
+
+    const raw = fs.readFileSync(CHALLENGE_STORE_FILE, "utf8");
+    if (!raw) return;
+
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return;
+
+    const now = Date.now();
+    let restored = 0;
+
+    for (const item of list) {
+      const challenge = normalizeChallengeRecord(item);
+      if (!challenge) continue;
+      if (Date.parse(challenge.expiresAt) <= now) continue;
+      challenges.set(challenge.id, challenge);
+      restored += 1;
+    }
+
+    if (restored > 0) {
+      console.log(`[hub] restored ${restored} challenge(s) from disk`);
+    }
+  } catch (err) {
+    console.warn(`[hub] failed to load challenge store: ${String(err.message || err)}`);
+  }
+}
+
 function schedulePersist() {
-  if (!SESSION_STORE_FILE) return;
+  if (!SESSION_STORE_FILE && !CHALLENGE_STORE_FILE) return;
 
   if (persistState.timer) {
     clearTimeout(persistState.timer);
@@ -765,37 +1153,60 @@ function schedulePersist() {
 }
 
 function flushPersist() {
-  if (!SESSION_STORE_FILE) return;
+  if (SESSION_STORE_FILE) {
+    const serializedSessions = [];
+    for (const session of sessions.values()) {
+      serializedSessions.push({
+        id: session.id,
+        roomCode: session.roomCode,
+        platform: session.platform,
+        capabilities: session.capabilities,
+        metadata: session.metadata,
+        clientVersion: session.clientVersion,
+        hostToken: session.hostToken,
+        joinToken: session.joinToken,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        closedAt: session.closedAt,
+        closeReason: session.closeReason,
+        hostLastSeenAt: session.hostLastSeenAt,
+        controllerLastSeenAt: session.controllerLastSeenAt,
+        eventSeq: session.eventSeq,
+        events: session.events,
+      });
+    }
 
-  const serialized = [];
-  for (const session of sessions.values()) {
-    serialized.push({
-      id: session.id,
-      roomCode: session.roomCode,
-      platform: session.platform,
-      capabilities: session.capabilities,
-      metadata: session.metadata,
-      clientVersion: session.clientVersion,
-      hostToken: session.hostToken,
-      joinToken: session.joinToken,
-      createdAt: session.createdAt,
-      expiresAt: session.expiresAt,
-      closedAt: session.closedAt,
-      closeReason: session.closeReason,
-      hostLastSeenAt: session.hostLastSeenAt,
-      controllerLastSeenAt: session.controllerLastSeenAt,
-      eventSeq: session.eventSeq,
-      events: session.events,
-    });
+    try {
+      writeJsonAtomically(SESSION_STORE_FILE, serializedSessions);
+    } catch (err) {
+      console.warn(`[hub] failed to persist sessions: ${String(err.message || err)}`);
+    }
   }
 
-  try {
-    fs.mkdirSync(path.dirname(SESSION_STORE_FILE), { recursive: true });
-    const tmp = `${SESSION_STORE_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(serialized), "utf8");
-    fs.renameSync(tmp, SESSION_STORE_FILE);
-  } catch (err) {
-    console.warn(`[hub] failed to persist sessions: ${String(err.message || err)}`);
+  if (CHALLENGE_STORE_FILE) {
+    const serializedChallenges = [];
+    for (const challenge of challenges.values()) {
+      serializedChallenges.push({
+        id: challenge.id,
+        source: challenge.source,
+        title: challenge.title,
+        senderName: challenge.senderName,
+        category: challenge.category,
+        rules: challenge.rules,
+        createdAt: challenge.createdAt,
+        updatedAt: challenge.updatedAt,
+        expiresAt: challenge.expiresAt,
+        questions: challenge.questions,
+        senderAttempt: challenge.senderAttempt,
+        attempts: challenge.attempts,
+      });
+    }
+
+    try {
+      writeJsonAtomically(CHALLENGE_STORE_FILE, serializedChallenges);
+    } catch (err) {
+      console.warn(`[hub] failed to persist challenges: ${String(err.message || err)}`);
+    }
   }
 }
 
@@ -897,6 +1308,698 @@ function pruneCodeJoinAttempts(now = Date.now()) {
   }
 }
 
+function pruneChallenges(now = Date.now()) {
+  for (const [id, challenge] of challenges.entries()) {
+    if (!challenge || Date.parse(challenge.expiresAt) <= now) {
+      challenges.delete(id);
+      schedulePersist();
+    }
+  }
+}
+
+function getChallenge(rawChallengeId, options = {}) {
+  const challengeId = sanitizeId(rawChallengeId);
+  if (!challengeId) {
+    return options.withError ? { challenge: null, error: "challenge_not_found" } : null;
+  }
+
+  const challenge = challenges.get(challengeId);
+  if (!challenge) {
+    return options.withError ? { challenge: null, error: "challenge_not_found" } : null;
+  }
+
+  if (!isChallengeOpen(challenge)) {
+    challenges.delete(challengeId);
+    schedulePersist();
+    return options.withError ? { challenge: null, error: "challenge_expired" } : null;
+  }
+
+  if (options.touch === true) {
+    touchChallenge(challenge);
+  }
+
+  return options.withError ? { challenge, error: "" } : challenge;
+}
+
+function isChallengeOpen(challenge) {
+  return !!challenge && Date.parse(challenge.expiresAt) > Date.now();
+}
+
+function touchChallenge(challenge) {
+  if (!challenge) return;
+  const now = Date.now();
+  challenge.updatedAt = new Date(now).toISOString();
+  challenge.expiresAt = new Date(now + CHALLENGE_TTL_MS).toISOString();
+  schedulePersist();
+}
+
+function buildChallengeUrl(challenge) {
+  const challengeId = encodeURIComponent(challenge.id);
+  const hub = encodeURIComponent(HUB_PUBLIC_BASE_URL);
+  return withControllerAnalytics(`${CONTROLLER_BASE_URL}/challenge/${challengeId}?hub=${hub}`);
+}
+
+function withControllerAnalytics(url) {
+  if (typeof url !== "string" || !url) return "";
+  if (!GA_MEASUREMENT_ID && !GA_DEBUG_ENABLED) return url;
+  try {
+    const parsed = new URL(url);
+    if (GA_MEASUREMENT_ID && !parsed.searchParams.has("gaid") && !parsed.searchParams.has("ga")) {
+      parsed.searchParams.set("gaid", GA_MEASUREMENT_ID);
+    }
+    if (GA_DEBUG_ENABLED && !parsed.searchParams.has("gadebug")) {
+      parsed.searchParams.set("gadebug", "1");
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function serializeChallenge(challenge, options = {}) {
+  const includeCorrectAnswers = options.includeCorrectAnswers === true;
+  const questions = challenge.questions.map((question) => {
+    const out = {
+      questionId: question.questionId,
+      questionText: question.questionText,
+      choices: question.choices,
+      points: question.points,
+    };
+    if (question.tts) {
+      out.tts = question.tts;
+    }
+    if (includeCorrectAnswers) {
+      out.correctIndex = question.correctIndex;
+    }
+    return out;
+  });
+
+  return {
+    id: challenge.id,
+    source: challenge.source,
+    bgAudioUrl: challenge.bgAudioUrl || "",
+    title: challenge.title,
+    senderName: challenge.senderName,
+    category: challenge.category,
+    rules: challenge.rules,
+    createdAt: challenge.createdAt,
+    updatedAt: challenge.updatedAt,
+    expiresAt: challenge.expiresAt,
+    questionCount: challenge.questions.length,
+    senderAttempt: challenge.senderAttempt
+      ? serializeAttempt(challenge.senderAttempt, {
+          includeCorrectAnswers: false,
+          includeParticipantId: false,
+        })
+      : null,
+    attempts: challenge.attempts.map((attempt) =>
+      serializeAttempt(attempt, { includeCorrectAnswers: false, includeParticipantId: false })
+    ),
+    leaderboard: buildChallengeLeaderboard(challenge),
+    questions,
+    shareUrl: buildChallengeUrl(challenge),
+  };
+}
+
+function serializeAttempt(attempt, options = {}) {
+  const includeCorrectAnswers = options.includeCorrectAnswers === true;
+  const includeParticipantId = options.includeParticipantId !== false;
+
+  const out = {
+    id: attempt.id,
+    participantName: attempt.participantName,
+    score: attempt.score,
+    correctCount: attempt.correctCount,
+    totalQuestions: attempt.totalQuestions,
+    createdAt: attempt.createdAt,
+    answers: Array.isArray(attempt.answers)
+      ? attempt.answers.map((item) => {
+          const entry = {
+            questionId: item.questionId,
+            questionText: item.questionText,
+            choices: item.choices,
+            selectedIndex: item.selectedIndex,
+            isCorrect: !!item.isCorrect,
+            pointsAwarded: item.pointsAwarded,
+            pointsPossible: item.pointsPossible,
+          };
+          if (includeCorrectAnswers) {
+            entry.correctIndex = item.correctIndex;
+          }
+          return entry;
+        })
+      : [],
+  };
+
+  if (includeParticipantId) {
+    out.participantId = attempt.participantId;
+  }
+
+  return out;
+}
+
+function buildChallengeLeaderboard(challenge) {
+  const rows = [];
+
+  if (challenge.senderAttempt) {
+    rows.push({
+      rank: 0,
+      id: challenge.senderAttempt.id,
+      participantName: challenge.senderAttempt.participantName || challenge.senderName,
+      score: challenge.senderAttempt.score || 0,
+      isSender: true,
+      createdAt: challenge.senderAttempt.createdAt || challenge.createdAt,
+    });
+  } else {
+    rows.push({
+      rank: 0,
+      id: "sender",
+      participantName: challenge.senderName,
+      score: 0,
+      isSender: true,
+      createdAt: challenge.createdAt,
+    });
+  }
+
+  for (const attempt of challenge.attempts) {
+    rows.push({
+      rank: 0,
+      id: attempt.id,
+      participantName: attempt.participantName,
+      score: attempt.score,
+      isSender: false,
+      createdAt: attempt.createdAt,
+    });
+  }
+
+  rows.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    return Date.parse(left.createdAt) - Date.parse(right.createdAt);
+  });
+
+  for (let i = 0; i < rows.length; i += 1) {
+    rows[i].rank = i + 1;
+  }
+
+  return rows.slice(0, 20);
+}
+
+function normalizeChallengeRecord(record) {
+  if (!isRecord(record)) return null;
+
+  const id = sanitizeId(record.id);
+  if (!id) return null;
+
+  const source = sanitizeSimple(record.source || "shared") || "shared";
+  const bgAudioUrl = sanitizeMediaUrl(record.bgAudioUrl || record.backgroundAudioUrl || "");
+  const title = sanitizeTitle(record.title);
+  const senderName = sanitizeDisplayName(record.senderName || "Player");
+  const category = normalizeCategory(record.category || {});
+  const rules = normalizeRules(record.rules || {});
+  const questions = normalizeChallengeQuestions(record.questions || []);
+  if (questions.length === 0) return null;
+
+  const createdAt = typeof record.createdAt === "string" && record.createdAt ? record.createdAt : nowIso();
+  const updatedAt = typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : createdAt;
+  const expiresAt =
+    typeof record.expiresAt === "string" && record.expiresAt
+      ? record.expiresAt
+      : new Date(Date.now() + CHALLENGE_TTL_MS).toISOString();
+
+  const senderAttempt = normalizeSenderAttempt(record.senderAttempt || {}, questions, senderName);
+  const attempts = [];
+  const inputAttempts = Array.isArray(record.attempts) ? record.attempts : [];
+  for (const item of inputAttempts) {
+    const attempt = normalizeStoredAttempt(item, questions);
+    if (!attempt) continue;
+    attempts.push(attempt);
+  }
+
+  return {
+    id,
+    source,
+    bgAudioUrl,
+    title,
+    senderName,
+    category,
+    rules,
+    createdAt,
+    updatedAt,
+    expiresAt,
+    questions,
+    senderAttempt,
+    attempts,
+  };
+}
+
+function normalizeStoredAttempt(item, questions) {
+  if (!isRecord(item)) return null;
+
+  const id = sanitizeId(item.id) || makeId(12);
+  const participantId = sanitizeParticipantId(item.participantId);
+  if (!participantId) return null;
+
+  const participantName = sanitizeDisplayName(item.participantName || "Player");
+  const score = asFiniteInt(item.score, 0);
+  const createdAt = typeof item.createdAt === "string" && item.createdAt ? item.createdAt : nowIso();
+  const normalizedAnswers = normalizeAnswerBreakdown(item.answers || [], questions);
+  const correctCount = normalizedAnswers.filter((entry) => entry.isCorrect).length;
+
+  return {
+    id,
+    participantId,
+    participantName,
+    score,
+    correctCount,
+    totalQuestions: questions.length,
+    createdAt,
+    answers: normalizedAnswers,
+  };
+}
+
+function normalizeSenderAttempt(raw, questions, fallbackName) {
+  if (!isRecord(raw)) return null;
+  const hasAnswers = Array.isArray(raw.answers) && raw.answers.length > 0;
+  const hasScore =
+    Number.isFinite(readField(raw, ["score"])) ||
+    Number.isFinite(readField(raw, ["correctCount", "correctcount"]));
+  if (!hasAnswers && !hasScore) return null;
+
+  const participantName = sanitizeDisplayName(
+    readField(raw, ["participantName", "participantname", "name"]) || fallbackName || "You"
+  );
+  const createdAtValue = readField(raw, ["createdAt", "createdat"]);
+  const createdAt = typeof createdAtValue === "string" && createdAtValue ? createdAtValue : nowIso();
+  const answers = normalizeAnswerBreakdown(hasAnswers ? raw.answers : [], questions, {
+    includeMissing: false,
+  });
+
+  let score = asFiniteInt(readField(raw, ["score"]), 0);
+  let correctCount = 0;
+  if (answers.length > 0) {
+    score = 0;
+    for (const answer of answers) {
+      if (answer.isCorrect) {
+        score += answer.pointsPossible;
+        correctCount += 1;
+      }
+    }
+  } else {
+    correctCount = asFiniteInt(readField(raw, ["correctCount", "correctcount"]), 0);
+  }
+
+  return {
+    id: sanitizeId(readField(raw, ["id"])) || "sender",
+    participantId: "sender",
+    participantName,
+    score,
+    correctCount,
+    totalQuestions: questions.length,
+    createdAt,
+    answers,
+  };
+}
+
+function normalizeAnswerBreakdown(rawAnswers, questions, options = {}) {
+  const includeMissing = options.includeMissing !== false;
+  const map = new Map();
+  const answers = Array.isArray(rawAnswers) ? rawAnswers : [];
+  for (const item of answers) {
+    if (!isRecord(item)) continue;
+    const questionId = sanitizeQuestionId(readField(item, ["questionId", "questionid", "id"]));
+    if (!questionId) continue;
+    const selectedIndex = asFiniteInt(
+      readField(item, ["selectedIndex", "selectedindex", "answerIndex", "answerindex"]),
+      -1
+    );
+    map.set(questionId, selectedIndex);
+  }
+
+  if (!includeMissing && map.size === 0) {
+    return [];
+  }
+
+  const out = [];
+  for (const question of questions) {
+    if (!includeMissing && !map.has(question.questionId)) {
+      continue;
+    }
+    const selectedIndex = map.has(question.questionId) ? map.get(question.questionId) : -1;
+    out.push({
+      questionId: question.questionId,
+      questionText: question.questionText,
+      choices: question.choices,
+      selectedIndex,
+      correctIndex: question.correctIndex,
+      isCorrect: selectedIndex === question.correctIndex,
+      pointsAwarded: selectedIndex === question.correctIndex ? question.points : 0,
+      pointsPossible: question.points,
+    });
+  }
+
+  return out;
+}
+
+function normalizeCategory(raw) {
+  if (!isRecord(raw)) {
+    return {
+      id: "general",
+      name: "General Knowledge",
+    };
+  }
+
+  const id = sanitizeCategoryId(raw.id || raw.categoryId || raw.category || "general");
+  const name = sanitizeCategoryName(raw.name || raw.displayName || raw.title || id || "General Knowledge");
+  return {
+    id: id || "general",
+    name: name || "General Knowledge",
+  };
+}
+
+function normalizeRules(raw) {
+  const defaults = {
+    scoringVersion: "v1",
+    pointsPerCorrect: 100,
+    questionsPerRound: 5,
+    challengeType: "trivia_snapshot",
+  };
+
+  if (!isRecord(raw)) return defaults;
+
+  return {
+    scoringVersion: sanitizeSimple(raw.scoringVersion || defaults.scoringVersion) || defaults.scoringVersion,
+    pointsPerCorrect: asFiniteInt(raw.pointsPerCorrect, defaults.pointsPerCorrect),
+    questionsPerRound: asFiniteInt(raw.questionsPerRound, defaults.questionsPerRound),
+    challengeType: sanitizeSimple(raw.challengeType || defaults.challengeType) || defaults.challengeType,
+  };
+}
+
+function normalizeChallengeQuestions(rawQuestions) {
+  const out = [];
+  if (!Array.isArray(rawQuestions)) return out;
+
+  for (const item of rawQuestions) {
+    if (!isRecord(item)) continue;
+    const questionId =
+      sanitizeQuestionId(readField(item, ["questionId", "questionid", "question_id", "id", "qid"])) ||
+      `q_${out.length + 1}`;
+    const questionText = sanitizeQuestionText(
+      readField(item, ["questionText", "questiontext", "question_text", "question", "text", "prompt"]) || ""
+    );
+    if (!questionText) continue;
+
+    const rawChoices = readChoicesField(item);
+    const choices = rawChoices
+      .map((choice) => sanitizeChoiceText(choice))
+      .filter(Boolean)
+      .slice(0, 8);
+
+    if (choices.length < 2) continue;
+
+    const correctIndex = asFiniteInt(
+      readField(item, [
+        "correctIndex",
+        "correctindex",
+        "correct_answer_index",
+        "correctAnswerIndex",
+        "answerIndex",
+        "answerindex",
+      ]),
+      -1
+    );
+    if (correctIndex < 0 || correctIndex >= choices.length) continue;
+
+    const tts = normalizeQuestionTtsMetadata(item, choices.length);
+
+    out.push({
+      questionId,
+      questionText,
+      choices,
+      correctIndex,
+      points: Math.max(0, asFiniteInt(item.points, 100)),
+      tts,
+    });
+
+    if (out.length >= CHALLENGE_MAX_QUESTIONS) break;
+  }
+
+  return out;
+}
+
+function logInvalidChallengePayload(body) {
+  try {
+    const questions = Array.isArray(body.questions) ? body.questions : [];
+    const first = questions.length > 0 ? questions[0] : null;
+    const summary = {
+      senderNameType: typeof body.senderName,
+      categoryType: typeof body.category,
+      questionsCount: questions.length,
+      firstQuestionType: first ? typeof first : "none",
+      firstQuestionKeys: first && isRecord(first) ? Object.keys(first).slice(0, 12) : [],
+      firstQuestionTextType:
+        first && isRecord(first)
+          ? typeof readField(first, [
+              "questionText",
+              "questiontext",
+              "question_text",
+              "question",
+              "text",
+              "prompt",
+            ])
+          : "none",
+      firstChoicesType:
+        first && isRecord(first)
+          ? Array.isArray(readChoicesField(first))
+            ? "array"
+            : "none"
+          : "none",
+      firstChoiceValueType:
+        first && isRecord(first) && Array.isArray(readChoicesField(first)) && readChoicesField(first).length > 0
+          ? typeof readChoicesField(first)[0]
+          : "none",
+      firstCorrectIndexType:
+        first && isRecord(first)
+          ? typeof readField(first, [
+              "correctIndex",
+              "correctindex",
+              "correct_answer_index",
+              "correctAnswerIndex",
+              "answerIndex",
+              "answerindex",
+            ])
+          : "none",
+    };
+    console.warn(`[challenge] invalid_questions payload summary ${JSON.stringify(summary)}`);
+  } catch (err) {
+    console.warn("[challenge] invalid_questions payload summary unavailable");
+  }
+}
+
+function normalizeTriviaCategories(data) {
+  const list = extractArrayField(data, ["categories", "data", "items", "results"]);
+  const out = [];
+  for (const item of list) {
+    if (!isRecord(item)) continue;
+    const id = sanitizeCategoryId(item.id || item.categoryId || item.category);
+    const name = sanitizeCategoryName(item.displayName || item.name || item.title || id);
+    if (!id || !name) continue;
+    out.push({
+      id,
+      name,
+      displayName: name,
+      isPremium: !!item.isPremium,
+      order: Number.isFinite(item.order) ? Math.floor(item.order) : out.length + 1,
+    });
+  }
+
+  out.sort((left, right) => left.order - right.order);
+  return out;
+}
+
+function normalizeTriviaQuestions(data) {
+  const list = extractArrayField(data, ["questions", "data", "items", "results"]);
+  const out = [];
+  for (const item of list) {
+    if (!isRecord(item)) continue;
+    const questionId =
+      sanitizeQuestionId(readField(item, ["questionId", "questionid", "question_id", "id", "qid"])) ||
+      `q_${out.length + 1}`;
+    const questionText = sanitizeQuestionText(
+      readField(item, ["questionText", "questiontext", "question_text", "question", "text", "prompt"])
+    );
+    if (!questionText) continue;
+
+    const rawChoices = readChoicesField(item);
+    const choices = rawChoices
+      .map((choice) => sanitizeChoiceText(choice))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (choices.length < 2) continue;
+
+    const correctIndex = asFiniteInt(
+      readField(item, [
+        "correctIndex",
+        "correctindex",
+        "correct_answer_index",
+        "correctAnswerIndex",
+        "answerIndex",
+        "answerindex",
+      ]),
+      -1
+    );
+    if (correctIndex < 0 || correctIndex >= choices.length) continue;
+
+    const tts = normalizeQuestionTtsMetadata(item, choices.length);
+
+    out.push({
+      questionId,
+      questionText,
+      choices,
+      correctIndex,
+      points: 100,
+      tts,
+    });
+  }
+
+  return out;
+}
+
+function readField(record, keys) {
+  if (!isRecord(record)) return undefined;
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null) {
+      return record[key];
+    }
+  }
+  return undefined;
+}
+
+function readChoicesField(record) {
+  const raw = readField(record, ["choices", "choices", "options", "answers", "alternatives"]);
+  if (Array.isArray(raw)) return raw;
+  if (isRecord(raw)) return Object.values(raw);
+  return [];
+}
+
+function normalizeQuestionTtsMetadata(record, choiceCount) {
+  if (!isRecord(record)) return null;
+  const tts = isRecord(record.tts) ? record.tts : {};
+  const questionUrl = sanitizeMediaUrl(
+    readField(record, ["questionTtsUrl", "question_tts_url", "questionTts"]) ||
+      tts.questionUrl ||
+      extractTtsUrlFromValue(tts.question)
+  );
+
+  let sourceChoiceUrls = [];
+  const directChoiceUrls = readField(record, [
+    "choiceTtsUrls",
+    "choice_tts_urls",
+    "choiceTts",
+    "choicesTts",
+  ]);
+  if (Array.isArray(directChoiceUrls)) {
+    sourceChoiceUrls = directChoiceUrls;
+  } else if (Array.isArray(tts.choiceUrls)) {
+    sourceChoiceUrls = tts.choiceUrls;
+  } else if (Array.isArray(tts.choices)) {
+    sourceChoiceUrls = tts.choices;
+  } else if (isRecord(tts.choices)) {
+    sourceChoiceUrls = Object.values(tts.choices);
+  }
+
+  const totalChoices = Math.max(0, asFiniteInt(choiceCount, 0));
+  const choiceUrls = [];
+  for (let i = 0; i < totalChoices; i += 1) {
+    choiceUrls.push(sanitizeMediaUrl(extractTtsUrlFromValue(sourceChoiceUrls[i])));
+  }
+
+  const hasQuestion = !!questionUrl;
+  const hasChoice = choiceUrls.some((value) => !!value);
+  if (!hasQuestion && !hasChoice) return null;
+
+  return {
+    questionUrl,
+    choiceUrls,
+  };
+}
+
+function extractTtsUrlFromValue(value) {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return "";
+  return (
+    value.url ||
+    value.audioUrl ||
+    value.ttsUrl ||
+    value.src ||
+    value.file ||
+    value.pregenUrl ||
+    ""
+  );
+}
+
+function extractArrayField(data, keys) {
+  if (Array.isArray(data)) return data;
+  if (!isRecord(data)) return [];
+
+  for (const key of keys) {
+    if (Array.isArray(data[key])) {
+      return data[key];
+    }
+  }
+
+  return [];
+}
+
+async function fetchTriviaPayload(paths) {
+  if (!TRIVIA_CONTENT_BASE_URL) {
+    throw new Error("missing_trivia_base_url");
+  }
+
+  const headers = {};
+  if (TRIVIA_CONTENT_API_KEY) {
+    headers["x-api-key"] = TRIVIA_CONTENT_API_KEY;
+  }
+
+  let lastError = null;
+  for (const route of paths) {
+    const url = `${TRIVIA_CONTENT_BASE_URL}${route.startsWith("/") ? route : `/${route}`}`;
+    try {
+      const data = await fetchJsonWithTimeout(url, {
+        headers,
+        timeoutMs: TRIVIA_FETCH_TIMEOUT_MS,
+      });
+      return data;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("trivia_fetch_failed");
+}
+
+async function fetchJsonWithTimeout(url, options = {}) {
+  const timeoutMs = clampInt(options.timeoutMs || 5000, 500, 30000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+
+  try {
+    const response = await fetch(url, {
+      method: options.method || "GET",
+      headers: options.headers || {},
+      body: options.body,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function parseOriginList(value) {
   const set = new Set();
   String(value)
@@ -910,6 +2013,34 @@ function parseOriginList(value) {
   }
 
   return set;
+}
+
+function parseBooleanFlag(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parseHostList(value) {
+  const set = new Set();
+  String(value)
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .forEach((item) => set.add(item));
+  return set;
+}
+
+function isAllowedAudioProxyUrl(value) {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return AUDIO_PROXY_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 function getToken(value) {
@@ -944,6 +2075,104 @@ function sanitizeSimple(value) {
   return value.trim().toLowerCase().replace(/[^a-z0-9_:\-.]/g, "").slice(0, 32);
 }
 
+function sanitizeGaMeasurementId(value) {
+  if (typeof value !== "string") return "";
+  const cleaned = value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, "")
+    .slice(0, 32);
+  if (!/^G-[A-Z0-9]{4,30}$/.test(cleaned)) return "";
+  return cleaned;
+}
+
+function sanitizeCategoryId(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().replace(/[^a-z0-9_:\-.]/g, "").slice(0, 64);
+}
+
+function sanitizeCategoryName(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+}
+
+function sanitizeDisplayName(value) {
+  if (typeof value !== "string") return "Player";
+  const cleaned = value
+    .trim()
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 32);
+  return cleaned || "Player";
+}
+
+function sanitizeTitle(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 120);
+}
+
+function sanitizeQuestionId(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/[^a-zA-Z0-9_:\-.]/g, "").slice(0, 64);
+}
+
+function sanitizeQuestionText(value) {
+  const text = coerceText(value);
+  if (!text) return "";
+  return text
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 280);
+}
+
+function sanitizeChoiceText(value) {
+  const text = coerceText(value);
+  if (!text) return "";
+  return text
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 120);
+}
+
+function sanitizeMediaUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (!/^https?:\/\//i.test(trimmed)) return "";
+  return trimmed.slice(0, 2048);
+}
+
+function coerceText(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (isRecord(value)) {
+    const picked =
+      value.text ??
+      value.label ??
+      value.title ??
+      value.name ??
+      value.value ??
+      value.answer ??
+      value.choice ??
+      "";
+    if (picked !== value) return coerceText(picked);
+  }
+  return "";
+}
+
+function sanitizeParticipantId(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/[^a-zA-Z0-9_:\-.]/g, "").slice(0, 64);
+}
+
 function sanitizeClientVersion(value) {
   if (typeof value !== "string") return "";
   const cleaned = value.trim().replace(/[^0-9]/g, "");
@@ -963,6 +2192,12 @@ function clampInt(value, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return min;
   return Math.min(Math.max(Math.floor(n), min), max);
+}
+
+function asFiniteInt(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.floor(n);
 }
 
 function makeId(size) {
@@ -986,4 +2221,11 @@ function toUtf8(raw) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function writeJsonAtomically(filepath, value) {
+  fs.mkdirSync(path.dirname(filepath), { recursive: true });
+  const tmp = `${filepath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value), "utf8");
+  fs.renameSync(tmp, filepath);
 }
