@@ -2609,7 +2609,7 @@
                 data-mini-more="1"
                 style="background-image:url('https://d3tswg7dtbmd2x.cloudfront.net/qr/catbg.png')"
               >
-                More
+                More Categories
               </button>
             `
                 : ""
@@ -2662,7 +2662,7 @@
       .map((category) => sanitizeInlineText(category.displayName || category.name || category.id || ""))
       .filter(Boolean);
     if (hasMore) {
-      categoryNames.push("More");
+      categoryNames.push("More Categories");
     }
     if (categoryNames.length > 0) {
       playChallengeSpeechSequence([
@@ -3618,11 +3618,14 @@
     const tts = normalizeQuestionTts(question, choices.length);
     const choiceUrls = tts && Array.isArray(tts.choiceUrls) ? tts.choiceUrls : [];
     const parts = [];
+    const spokenQuestion = stripQuestionNumberPrefix(question.questionText || "");
 
-    if (tts && tts.questionUrl) {
+    if (spokenQuestion) {
+      parts.push({ text: spokenQuestion, rate: 1.2 });
+    } else if (tts && tts.questionUrl) {
       parts.push({ url: tts.questionUrl, rate: 1.2 });
     } else {
-      parts.push({ text: question.questionText || "", rate: 1.2 });
+      parts.push({ text: sanitizeInlineText(question.questionText || ""), rate: 1.2 });
     }
 
     for (let i = 0; i < choices.length; i += 1) {
@@ -3811,6 +3814,16 @@
       questionUrl,
       choiceUrls,
     };
+  }
+
+  function stripQuestionNumberPrefix(value) {
+    const text = sanitizeInlineText(value || "");
+    if (!text) return "";
+    const cleaned = text.replace(
+      /^\s*question\s*(?:number\s*)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*[\.\:\-\,]?\s*/i,
+      ""
+    );
+    return sanitizeInlineText(cleaned || text);
   }
 
   function supportsLoopElementVolumeControl() {
