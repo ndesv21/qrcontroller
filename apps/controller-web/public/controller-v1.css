@@ -905,6 +905,9 @@ body.mode-challenge .challenge-shell {
   border: 0;
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
+  filter: none;
+  animation: none;
   overflow: visible;
   -webkit-tap-highlight-color: transparent;
   transition: opacity 120ms ease;
@@ -917,10 +920,22 @@ body.mode-challenge .challenge-shell {
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
-  filter:
-    drop-shadow(0 22px 34px rgba(0, 0, 0, 0.35))
-    drop-shadow(0 0 44px rgba(58, 120, 255, 0.22));
-  transition: filter 120ms ease, opacity 120ms ease;
+  filter: none;
+  transition: opacity 120ms ease;
+}
+
+.mic-button::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  width: 72%;
+  height: 16%;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  filter: blur(10px);
+  pointer-events: none;
 }
 
 .mic-button::after {
@@ -939,13 +954,13 @@ body.mode-challenge .challenge-shell {
 .mic-button.is-pressed {
   transform: translateX(-50%);
   animation: none;
+  background: transparent;
+  box-shadow: none;
+  filter: none;
 }
 
 .mic-button.is-pressed .mic-image {
   opacity: 1;
-  filter:
-    drop-shadow(0 22px 34px rgba(0, 0, 0, 0.35))
-    drop-shadow(0 0 58px rgba(20, 255, 3, 0.35));
 }
 
 .mic-button.is-pressed::after {
@@ -957,6 +972,9 @@ body.mode-challenge .challenge-shell {
 .mic-button.is-retry {
   transform: translateX(-50%);
   animation: none;
+  background: transparent;
+  box-shadow: none;
+  filter: none;
 }
 
 .mic-label {
@@ -984,16 +1002,10 @@ body.mode-challenge .challenge-shell {
 .mic-button.is-arming .mic-image,
 .mic-button.is-retry .mic-image {
   opacity: 1;
-  filter:
-    drop-shadow(0 20px 32px rgba(0, 0, 0, 0.35))
-    drop-shadow(0 0 52px rgba(20, 255, 3, 0.28));
 }
 
 .mic-button.is-processing .mic-image {
   opacity: 0.3;
-  filter:
-    drop-shadow(0 20px 32px rgba(0, 0, 0, 0.24))
-    drop-shadow(0 0 30px rgba(20, 255, 3, 0.18));
 }
 
 .mic-button.is-processing .mic-label {
