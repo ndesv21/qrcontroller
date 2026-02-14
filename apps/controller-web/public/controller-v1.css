@@ -1467,24 +1467,12 @@ body.mode-challenge .challenge-shell {
   gap: 16px;
 }
 
-.mini-setup-main .challenge-title {
-  width: 100%;
-  margin-left: auto;
-  margin-right: auto;
-  text-align: center;
-}
-
 .mini-category-list {
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-}
-
-.mini-category-list .challenge-category-btn {
-  text-align: center;
-  justify-content: center;
 }
 
 .mini-setup-footer {
